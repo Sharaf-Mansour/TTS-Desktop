@@ -1,4 +1,12 @@
 import { Electroview } from "electrobun/view";
+import { TTS_ERROR_CODES, parseTtsError } from "../../shared/tts-errors.js";
+import {
+  MAX_SYNTHESIS_TEXT_LENGTH,
+  buildDownloadFilename,
+  buildVoiceKey,
+  findAriaVoice,
+  getPreferredVoice,
+} from "../../shared/tts-shared.js";
 
 const rpc = Electroview.defineRPC({
   handlers: {
@@ -15,13 +23,16 @@ const elements = {
   voiceSearch: document.getElementById("voiceSearch"),
   voiceCount: document.getElementById("voiceCount"),
   ariaStatus: document.getElementById("ariaStatus"),
+  voiceRestoreStatus: document.getElementById("voiceRestoreStatus"),
   voiceOutput: document.getElementById("voiceOutput"),
   speechStatus: document.getElementById("speechStatus"),
   downloadStatus: document.getElementById("downloadStatus"),
   text: document.getElementById("text"),
   speakButton: document.getElementById("speakButton"),
+  cancelGenerateButton: document.getElementById("cancelGenerateButton"),
   downloadButton: document.getElementById("downloadButton"),
   stopPlaybackButton: document.getElementById("stopPlaybackButton"),
+  downloadHint: document.getElementById("downloadHint"),
   previewPanel: document.getElementById("previewPanel"),
   previewTitle: document.getElementById("previewTitle"),
   durationOutput: document.getElementById("durationOutput"),
@@ -45,7 +56,35 @@ const state = {
   lastGeneratedBlob: null,
   lastGeneratedFilename: "",
   isGenerating: false,
+  runtimeCanSynthesize: true,
+  maxSynthesisTextLength: MAX_SYNTHESIS_TEXT_LENGTH,
+  currentSynthesisRequestId: "",
+  cancelRequestedRequestId: "",
 };
+
+function wasRequestCanceled(requestId) {
+  return state.cancelRequestedRequestId === requestId;
+}
+
+function updateDownloadHint() {
+  if (!elements.downloadHint) {
+    return;
+  }
+
+  const availabilityNotice = state.runtimeCanSynthesize
+    ? ""
+    : " Speech generation is currently unavailable until Node.js is installed and the app is restarted.";
+  elements.downloadHint.textContent = `Generate a preview first, then save it explicitly. If your browser supports it, you will get a real save dialog; otherwise the app falls back to a standard download. Text limit: ${state.maxSynthesisTextLength} characters per request.${availabilityNotice}`;
+}
+
+function setVoiceRestoreStatus(message = "") {
+  if (!elements.voiceRestoreStatus) {
+    return;
+  }
+
+  elements.voiceRestoreStatus.hidden = !message;
+  elements.voiceRestoreStatus.textContent = message;
+}
 
 function setSpeechStatus(message) {
   elements.speechStatus.textContent = `Speech status: ${message}`;
@@ -58,7 +97,9 @@ function setDownloadStatus(message) {
 }
 
 function syncActionButtons() {
-  elements.speakButton.disabled = state.isGenerating;
+  elements.speakButton.disabled =
+    state.isGenerating || !state.runtimeCanSynthesize;
+  elements.cancelGenerateButton.disabled = !state.isGenerating;
   elements.downloadButton.disabled =
     state.isGenerating ||
     !state.lastGeneratedBlob ||
@@ -70,6 +111,10 @@ function syncActionButtons() {
     !elements.previewAudio.paused &&
     !elements.previewAudio.ended;
   elements.stopPlaybackButton.disabled = state.isGenerating || !isPlaying;
+  elements.voiceSelect.disabled = state.isGenerating;
+  elements.langFilter.disabled = state.isGenerating;
+  elements.voiceSearch.disabled = state.isGenerating;
+  elements.text.disabled = state.isGenerating;
 }
 
 function getStoredVoiceKey() {
@@ -92,34 +137,10 @@ function setStoredVoiceKey(voiceKey) {
   }
 }
 
-function buildVoiceKey(voice) {
-  return voice.shortName;
-}
-
 function describeVoice(voice) {
   return voice
     ? `${voice.friendlyName} (${voice.locale})`
     : "No provider voice selected";
-}
-
-function findAriaVoice(voices) {
-  return (
-    voices.find((voice) => voice.friendlyName.toLowerCase().includes("aria")) ||
-    null
-  );
-}
-
-function getPreferredVoice(voices) {
-  return (
-    findAriaVoice(voices) ||
-    voices.find((voice) => voice.shortName === "en-US-AvaNeural") ||
-    voices.find(
-      (voice) => voice.locale === "en-US" && voice.gender === "Female",
-    ) ||
-    voices.find((voice) => voice.locale === "en-US") ||
-    voices[0] ||
-    null
-  );
 }
 
 function getSelectedVoice() {
@@ -176,34 +197,6 @@ function clearPreview() {
   syncActionButtons();
 }
 
-function slugifyText(text) {
-  const normalized = text
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
-
-  const slug = normalized.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  return (
-    slug.split("-").filter(Boolean).slice(0, 10).join("-").slice(0, 64) ||
-    "speech"
-  );
-}
-
-function buildTimestamp() {
-  const now = new Date();
-  const pad = (value) => String(value).padStart(2, "0");
-
-  return (
-    [now.getFullYear(), pad(now.getMonth() + 1), pad(now.getDate())].join("") +
-    "-" +
-    [pad(now.getHours()), pad(now.getMinutes()), pad(now.getSeconds())].join("")
-  );
-}
-
-function buildDownloadFilename(text, extension) {
-  return `${slugifyText(text)}-${buildTimestamp()}.${extension}`;
-}
-
 function formatDuration(seconds) {
   return `${seconds.toFixed(2)}s`;
 }
@@ -228,6 +221,50 @@ function buildWaveformPeaks(audioBuffer, targetCount = 180) {
   }
 
   return peaks;
+}
+
+async function loadRuntimeStatus() {
+  const runtimeStatus = await electroview.rpc.request.getRuntimeStatus({});
+
+  state.runtimeCanSynthesize = runtimeStatus?.hasNode !== false;
+  if (
+    Number.isFinite(runtimeStatus?.maxSynthesisTextLength) &&
+    runtimeStatus.maxSynthesisTextLength > 0
+  ) {
+    state.maxSynthesisTextLength = runtimeStatus.maxSynthesisTextLength;
+  }
+
+  updateDownloadHint();
+
+  if (!state.runtimeCanSynthesize) {
+    setSpeechStatus(
+      "Node.js is not available. Install Node.js and restart the app to enable speech generation.",
+    );
+    setDownloadStatus(
+      "speech generation unavailable until Node.js is installed",
+    );
+  }
+}
+
+function getFriendlyErrorMessage(appError) {
+  switch (appError.code) {
+    case TTS_ERROR_CODES.NODE_MISSING:
+      return "Node.js is not available. Install Node.js and restart the app to enable speech generation.";
+    case TTS_ERROR_CODES.TEXT_TOO_LONG:
+      return `Text is too long. Keep each request under ${state.maxSynthesisTextLength} characters.`;
+    case TTS_ERROR_CODES.VOICES_UNAVAILABLE:
+      return "The hosted voice catalog is unavailable right now. Try again in a moment.";
+    case TTS_ERROR_CODES.VOICE_NOT_FOUND:
+      return "The selected voice is no longer available. Choose another voice and try again.";
+    case TTS_ERROR_CODES.SYNTHESIS_TIMEOUT:
+      return "Speech generation took too long. Shorten the text and try again.";
+    case TTS_ERROR_CODES.SYNTHESIS_CANCELED:
+      return "Speech generation was canceled.";
+    case TTS_ERROR_CODES.AUDIO_TOO_LARGE:
+      return "The generated audio is too large to save with the current limit.";
+    default:
+      return appError.message || "An unexpected error occurred.";
+  }
 }
 
 function renderWaveform(peaks = state.lastPreviewPeaks) {
@@ -407,10 +444,19 @@ async function saveGeneratedAudio() {
       return;
     }
   } catch (error) {
+    const appError = parseTtsError(error, TTS_ERROR_CODES.SAVE_FAILED);
     console.warn(
       "Bun save flow failed, falling back to browser download",
-      error,
+      appError,
     );
+
+    if (
+      appError.code === TTS_ERROR_CODES.AUDIO_TOO_LARGE ||
+      appError.code === TTS_ERROR_CODES.AUDIO_REQUIRED
+    ) {
+      setDownloadStatus(getFriendlyErrorMessage(appError));
+      return;
+    }
   }
 
   if (triggerBrowserDownload(state.lastGeneratedFilename)) {
@@ -549,6 +595,24 @@ async function populateVoices() {
   );
   const selectedVoice = restoredVoice || getPreferredVoice(voices);
 
+  if (storedSelection) {
+    if (restoredVoice) {
+      setVoiceRestoreStatus(
+        `Restored your saved voice: ${restoredVoice.friendlyName} (${restoredVoice.locale}).`,
+      );
+    } else if (selectedVoice) {
+      setVoiceRestoreStatus(
+        `Your previously saved voice is no longer available. Switched to ${selectedVoice.friendlyName} (${selectedVoice.locale}).`,
+      );
+    } else {
+      setVoiceRestoreStatus(
+        "Your previously saved voice is no longer available.",
+      );
+    }
+  } else {
+    setVoiceRestoreStatus("");
+  }
+
   if (selectedVoice) {
     selectVoice(selectedVoice);
   }
@@ -562,40 +626,75 @@ async function populateVoices() {
   return true;
 }
 
-async function requestSynthesis(text, voice) {
-  const response = await electroview.rpc.request.synthesizeSpeech({
-    text,
-    requestedVoice: voice
-      ? {
-          name: voice.friendlyName,
-          lang: voice.locale,
-          voiceURI: voice.shortName,
-          default: false,
-          localService: false,
-        }
-      : null,
-  });
+async function requestSynthesis(text, voice, requestId) {
+  try {
+    const response = await electroview.rpc.request.synthesizeSpeech({
+      requestId,
+      text,
+      requestedVoice: voice
+        ? {
+            name: voice.friendlyName,
+            lang: voice.locale,
+            voiceURI: voice.shortName,
+            default: false,
+            localService: false,
+          }
+        : null,
+    });
 
-  return {
-    blob: base64ToBlob(response.audioBase64, response.mimeType || "audio/mpeg"),
-    usedVoiceName: response.usedVoiceName || "",
-    usedVoiceCulture: response.usedVoiceCulture || "",
-    suggestedFilename: response.suggestedFilename || "",
-  };
+    return {
+      blob: base64ToBlob(
+        response.audioBase64,
+        response.mimeType || "audio/mpeg",
+      ),
+      usedVoiceName: response.usedVoiceName || "",
+      usedVoiceCulture: response.usedVoiceCulture || "",
+      suggestedFilename: response.suggestedFilename || "",
+    };
+  } catch (error) {
+    throw parseTtsError(error, TTS_ERROR_CODES.SYNTHESIS_FAILED);
+  }
 }
 
 function ensureSpeakableState() {
+  const normalizedText = elements.text.value.trim();
+
   if (state.availableVoices.length === 0) {
     setSpeechStatus("hosted voices are still loading, please try again");
     return false;
   }
 
-  if (!elements.text.value.trim()) {
+  if (!normalizedText) {
     setSpeechStatus("enter some text first");
     return false;
   }
 
+  if (normalizedText.length > state.maxSynthesisTextLength) {
+    setSpeechStatus(
+      `text exceeds ${state.maxSynthesisTextLength} characters; shorten it and try again`,
+    );
+    setDownloadStatus("generation blocked by text length limit");
+    return false;
+  }
+
   return true;
+}
+
+async function cancelSpeechGeneration() {
+  if (!state.isGenerating || !state.currentSynthesisRequestId) {
+    return;
+  }
+
+  const requestId = state.currentSynthesisRequestId;
+  state.cancelRequestedRequestId = requestId;
+  setSpeechStatus("canceling speech generation");
+  setDownloadStatus("canceling generation");
+
+  try {
+    await electroview.rpc.request.cancelSynthesis({ requestId });
+  } catch (error) {
+    console.warn("Failed to cancel speech generation", error);
+  }
 }
 
 async function generateSpeech() {
@@ -605,8 +704,13 @@ async function generateSpeech() {
 
   const selectedVoice = getSelectedVoice();
   const text = elements.text.value.trim();
+  const requestId = window.crypto?.randomUUID
+    ? window.crypto.randomUUID()
+    : `tts-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
   state.isGenerating = true;
+  state.currentSynthesisRequestId = requestId;
+  state.cancelRequestedRequestId = "";
   state.lastServerVoiceLabel = "";
   syncActionButtons();
   clearPreview();
@@ -618,9 +722,25 @@ async function generateSpeech() {
 
   try {
     const { blob, usedVoiceName, usedVoiceCulture, suggestedFilename } =
-      await requestSynthesis(text, selectedVoice);
+      await requestSynthesis(text, selectedVoice, requestId);
 
+    if (
+      state.currentSynthesisRequestId !== requestId ||
+      wasRequestCanceled(requestId)
+    ) {
+      throw new Error("Speech generation was canceled.");
+    }
+
+    setSpeechStatus("preparing generated preview");
     const decodedAudio = await decodeAudioBlob(blob);
+
+    if (
+      state.currentSynthesisRequestId !== requestId ||
+      wasRequestCanceled(requestId)
+    ) {
+      throw new Error("Speech generation was canceled.");
+    }
+
     const filename = suggestedFilename || buildDownloadFilename(text, "mp3");
     const durationSeconds = decodedAudio ? decodedAudio.duration : 0;
     const peaks = decodedAudio ? buildWaveformPeaks(decodedAudio) : [];
@@ -628,23 +748,48 @@ async function generateSpeech() {
       ? `${usedVoiceName}${usedVoiceCulture ? ` (${usedVoiceCulture})` : ""}`
       : "default server voice";
 
+    if (
+      state.currentSynthesisRequestId !== requestId ||
+      wasRequestCanceled(requestId)
+    ) {
+      return;
+    }
+
     updatePreview(blob, filename, durationSeconds, peaks);
     updateVoiceOutput(selectedVoice);
-    await elements.previewAudio.play().catch(() => undefined);
+    const autoplayStarted = await elements.previewAudio
+      .play()
+      .then(() => true)
+      .catch((error) => {
+        console.warn("Preview autoplay was blocked", error);
+        return false;
+      });
     setSpeechStatus(
-      `server rendered with ${usedVoiceName || "default server voice"}${usedVoiceCulture ? ` (${usedVoiceCulture})` : ""}`,
+      autoplayStarted
+        ? `server rendered with ${usedVoiceName || "default server voice"}${usedVoiceCulture ? ` (${usedVoiceCulture})` : ""}`
+        : `preview ready for ${usedVoiceName || "default server voice"}${usedVoiceCulture ? ` (${usedVoiceCulture})` : ""}; press play to listen`,
     );
     setDownloadStatus(
       `preview ready: ${filename}. Use Save Audio As to keep it.`,
     );
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "server-side synthesis failed";
-    setSpeechStatus(`error: ${message}`);
-    setDownloadStatus("generation failed");
+    const appError = parseTtsError(error, TTS_ERROR_CODES.SYNTHESIS_FAILED);
+    const wasCanceled = appError.code === TTS_ERROR_CODES.SYNTHESIS_CANCELED;
+    setSpeechStatus(
+      wasCanceled
+        ? "speech generation canceled"
+        : `error: ${getFriendlyErrorMessage(appError)}`,
+    );
+    setDownloadStatus(
+      wasCanceled ? "generation canceled" : "generation failed",
+    );
   } finally {
-    state.isGenerating = false;
-    syncActionButtons();
+    if (state.currentSynthesisRequestId === requestId) {
+      state.isGenerating = false;
+      state.currentSynthesisRequestId = "";
+      state.cancelRequestedRequestId = "";
+      syncActionButtons();
+    }
   }
 }
 
@@ -653,6 +798,7 @@ elements.voiceSelect.addEventListener("change", () => {
   if (selectedVoice) {
     setStoredVoiceKey(buildVoiceKey(selectedVoice));
   }
+  setVoiceRestoreStatus("");
   updateVoiceOutput(selectedVoice);
   setSpeechStatus("hosted voice selected");
 });
@@ -667,6 +813,10 @@ elements.voiceSearch.addEventListener("input", () => {
 
 elements.speakButton.addEventListener("click", () => {
   void generateSpeech();
+});
+
+elements.cancelGenerateButton.addEventListener("click", () => {
+  void cancelSpeechGeneration();
 });
 
 elements.downloadButton.addEventListener("click", () => {
@@ -700,11 +850,19 @@ elements.previewAudio.addEventListener("ended", () => {
 window.addEventListener("load", () => {
   clearPreview();
   renderWaveform([]);
+  updateDownloadHint();
   syncActionButtons();
+  void loadRuntimeStatus()
+    .catch((error) => {
+      const appError = parseTtsError(error, TTS_ERROR_CODES.UNEXPECTED);
+      console.warn("Failed to load runtime status", appError);
+    })
+    .finally(() => {
+      syncActionButtons();
+    });
   void populateVoices().catch((error) => {
-    const message =
-      error instanceof Error ? error.message : "failed to load hosted voices";
-    setSpeechStatus(`error: ${message}`);
+    const appError = parseTtsError(error, TTS_ERROR_CODES.VOICES_UNAVAILABLE);
+    setSpeechStatus(`error: ${getFriendlyErrorMessage(appError)}`);
     setDownloadStatus("voice catalog unavailable");
   });
 });

@@ -8,8 +8,11 @@
     "dev": "electrobun dev",
     "start": "electrobun dev",
     "build": "electrobun build",
+    "build:app:stable": "electrobun build --env=stable",
+    "build:app:canary": "electrobun build --env=canary",
+    "build:installer": "bun scripts/build-installer.js stable",
     "build:stable": "bun scripts/build-installer.js stable",
-    "build:release": "bun scripts/build-installer.js stable",
+    "build:release": "bun run build:installer",
     "build:canary": "bun scripts/build-installer.js canary"
   },
   "dependencies": {

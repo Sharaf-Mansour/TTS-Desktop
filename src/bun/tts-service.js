@@ -3,8 +3,15 @@ import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getVoices } from "edge-tts";
+import { TTS_ERROR_CODES, createTtsError } from "../shared/tts-errors.js";
+import {
+  MAX_SYNTHESIS_TEXT_LENGTH,
+  getPreferredVoice,
+} from "../shared/tts-shared.js";
 
 let voiceCache = null;
+
+const SYNTHESIS_TIMEOUT_MS = 30000;
 
 export async function getHostedVoices(forceRefresh = false) {
   if (!forceRefresh && voiceCache) {
@@ -133,13 +140,7 @@ export function chooseHostedVoiceForRequest(voices, requestedVoice) {
   }
 
   if (!requestedVoice) {
-    return (
-      voices.find((voice) => voice.shortName === "en-US-AriaNeural") ||
-      voices.find(
-        (voice) => voice.locale === "en-US" && voice.gender === "Female",
-      ) ||
-      voices[0]
-    );
+    return getPreferredVoice(voices);
   }
 
   const requestedName = String(requestedVoice.name || "")
@@ -224,50 +225,30 @@ export function chooseHostedVoiceForRequest(voices, requestedVoice) {
       (voice) =>
         requestedLocale && voice.locale.toLowerCase() === requestedLocale,
     ) ||
-    voices.find(
-      (voice) => voice.locale === "en-US" && voice.gender === "Female",
-    ) ||
-    voices.find((voice) => voice.locale === "en-US") ||
-    voices[0]
+    getPreferredVoice(voices)
   );
 }
 
-function slugifyText(text) {
-  const normalized = text
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
-
-  const slug = normalized.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  return (
-    slug.split("-").filter(Boolean).slice(0, 10).join("-").slice(0, 64) ||
-    "speech"
-  );
-}
-
-function buildTimestamp() {
-  const now = new Date();
-  const pad = (value) => String(value).padStart(2, "0");
-
-  return (
-    [now.getFullYear(), pad(now.getMonth() + 1), pad(now.getDate())].join("") +
-    "-" +
-    [pad(now.getHours()), pad(now.getMinutes()), pad(now.getSeconds())].join("")
-  );
-}
-
-export function buildDownloadFilename(text, extension) {
-  return `${slugifyText(text)}-${buildTimestamp()}.${extension}`;
-}
-
-export async function synthesizeSpeech(text, voiceName, helperScriptPath) {
+export async function synthesizeSpeech(
+  text,
+  voiceName,
+  helperScriptPath,
+  options = {},
+) {
   const outputPath = join(tmpdir(), `tts-studio-${randomUUID()}.mp3`);
   const requestPath = join(tmpdir(), `tts-studio-${randomUUID()}.json`);
   const nodeExecutable = Bun.which("node");
+  const onProcessCreated =
+    typeof options.onProcessCreated === "function"
+      ? options.onProcessCreated
+      : null;
+  const isCanceled =
+    typeof options.isCanceled === "function" ? options.isCanceled : () => false;
 
   if (!nodeExecutable) {
-    throw new Error(
-      "Node.js is required to run node-edge-tts. Install Node and ensure 'node' is available on PATH.",
+    throw createTtsError(
+      TTS_ERROR_CODES.NODE_MISSING,
+      "Node.js was not found on this system. Install Node.js and ensure 'node' is available on PATH before generating speech.",
     );
   }
 
@@ -288,20 +269,58 @@ export async function synthesizeSpeech(text, voiceName, helperScriptPath) {
       stdout: "pipe",
       stderr: "pipe",
     });
+    onProcessCreated?.(proc);
+
+    let didTimeout = false;
+    const timeoutHandle = setTimeout(() => {
+      didTimeout = true;
+      proc.kill();
+    }, SYNTHESIS_TIMEOUT_MS);
 
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(proc.stdout).text(),
       new Response(proc.stderr).text(),
       proc.exited,
-    ]);
+    ]).finally(() => {
+      clearTimeout(timeoutHandle);
+    });
+
+    if (didTimeout) {
+      throw createTtsError(
+        TTS_ERROR_CODES.SYNTHESIS_TIMEOUT,
+        `Speech generation timed out after ${Math.round(SYNTHESIS_TIMEOUT_MS / 1000)} seconds. Shorten the text and try again.`,
+      );
+    }
+
+    if (isCanceled()) {
+      throw createTtsError(
+        TTS_ERROR_CODES.SYNTHESIS_CANCELED,
+        "Speech generation was canceled.",
+      );
+    }
 
     if (exitCode !== 0) {
-      throw new Error(
+      if (isCanceled()) {
+        throw createTtsError(
+          TTS_ERROR_CODES.SYNTHESIS_CANCELED,
+          "Speech generation was canceled.",
+        );
+      }
+
+      throw createTtsError(
+        TTS_ERROR_CODES.SYNTHESIS_FAILED,
         stderr.trim() || stdout.trim() || "node-edge-tts synthesis failed",
       );
     }
 
     const file = Bun.file(outputPath);
+    if (!(await file.exists())) {
+      throw createTtsError(
+        TTS_ERROR_CODES.SYNTHESIS_OUTPUT_MISSING,
+        "Speech generation finished without producing an audio file.",
+      );
+    }
+
     return await file.arrayBuffer();
   } finally {
     await rm(requestPath, { force: true }).catch(() => undefined);

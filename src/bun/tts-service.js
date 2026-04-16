@@ -1,36 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { extname, join, resolve } from "node:path";
+import { join } from "node:path";
 import { getVoices } from "edge-tts";
-
-const rootDir = resolve(import.meta.dir, "..");
-const port = Number(process.env.PORT || 8003);
-const helperScriptPath = resolve(import.meta.dir, "edge-tts-helper.mjs");
-
-const contentTypes = {
-  ".css": "text/css; charset=utf-8",
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".mp3": "audio/mpeg",
-  ".wav": "audio/wav",
-  ".webm": "audio/webm",
-};
 
 let voiceCache = null;
 
-function jsonResponse(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store",
-    },
-  });
-}
-
-async function getHostedVoices(forceRefresh = false) {
+export async function getHostedVoices(forceRefresh = false) {
   if (!forceRefresh && voiceCache) {
     return voiceCache;
   }
@@ -151,7 +127,7 @@ function buildHostedShortNameCandidates(requestedVoice) {
   return [...candidates];
 }
 
-function chooseHostedVoiceForRequest(voices, requestedVoice) {
+export function chooseHostedVoiceForRequest(voices, requestedVoice) {
   if (!voices.length) {
     return null;
   }
@@ -280,13 +256,20 @@ function buildTimestamp() {
   );
 }
 
-function buildDownloadFilename(text, extension) {
+export function buildDownloadFilename(text, extension) {
   return `${slugifyText(text)}-${buildTimestamp()}.${extension}`;
 }
 
-async function synthesizeSpeech(text, voiceName) {
+export async function synthesizeSpeech(text, voiceName, helperScriptPath) {
   const outputPath = join(tmpdir(), `tts-studio-${randomUUID()}.mp3`);
   const requestPath = join(tmpdir(), `tts-studio-${randomUUID()}.json`);
+  const nodeExecutable = Bun.which("node");
+
+  if (!nodeExecutable) {
+    throw new Error(
+      "Node.js is required to run node-edge-tts. Install Node and ensure 'node' is available on PATH.",
+    );
+  }
 
   try {
     await writeFile(
@@ -301,7 +284,7 @@ async function synthesizeSpeech(text, voiceName) {
     );
 
     const proc = Bun.spawn({
-      cmd: ["node", helperScriptPath, requestPath],
+      cmd: [nodeExecutable, helperScriptPath, requestPath],
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -325,110 +308,3 @@ async function synthesizeSpeech(text, voiceName) {
     await rm(outputPath, { force: true }).catch(() => undefined);
   }
 }
-
-async function handleVoicesRequest() {
-  try {
-    const voices = await getHostedVoices();
-    return jsonResponse({ voices });
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "failed to enumerate voices";
-    return jsonResponse({ error: message }, 500);
-  }
-}
-
-async function handleSynthesizeRequest(request) {
-  try {
-    const body = await request.json();
-    const text = typeof body?.text === "string" ? body.text.trim() : "";
-    const requestedVoice =
-      typeof body?.requestedVoice === "object" && body.requestedVoice
-        ? {
-            name:
-              typeof body.requestedVoice.name === "string"
-                ? body.requestedVoice.name
-                : "",
-            lang:
-              typeof body.requestedVoice.lang === "string"
-                ? body.requestedVoice.lang
-                : "",
-            voiceURI:
-              typeof body.requestedVoice.voiceURI === "string"
-                ? body.requestedVoice.voiceURI
-                : "",
-            default: Boolean(body.requestedVoice.default),
-            localService: Boolean(body.requestedVoice.localService),
-          }
-        : undefined;
-
-    if (!text) {
-      return jsonResponse({ error: "Text is required." }, 400);
-    }
-
-    const voices = await getHostedVoices();
-    if (voices.length === 0) {
-      return jsonResponse({ error: "No hosted voices are available." }, 500);
-    }
-
-    const selectedVoice = chooseHostedVoiceForRequest(voices, requestedVoice);
-    if (!selectedVoice) {
-      return jsonResponse(
-        { error: "No suitable hosted voice was found." },
-        500,
-      );
-    }
-
-    const audioBuffer = await synthesizeSpeech(text, selectedVoice.shortName);
-    const headers = new Headers({
-      "Content-Type": "audio/mpeg",
-      "Cache-Control": "no-store",
-      "X-TTS-Voice-Name": encodeURIComponent(selectedVoice.friendlyName),
-      "X-TTS-Voice-Culture": encodeURIComponent(selectedVoice.locale),
-      "X-TTS-Filename": encodeURIComponent(buildDownloadFilename(text, "mp3")),
-    });
-
-    return new Response(audioBuffer, { headers });
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "server-side synthesis failed";
-    return jsonResponse({ error: message }, 500);
-  }
-}
-
-const server = Bun.serve({
-  port,
-  async fetch(request) {
-    const url = new URL(request.url);
-
-    if (url.pathname === "/api/voices") {
-      return handleVoicesRequest();
-    }
-
-    if (url.pathname === "/api/synthesize" && request.method === "POST") {
-      return handleSynthesizeRequest(request);
-    }
-
-    const pathname =
-      url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
-    const filePath = resolve(rootDir, `.${pathname}`);
-
-    if (!filePath.startsWith(rootDir)) {
-      return new Response("Forbidden", { status: 403 });
-    }
-
-    const file = Bun.file(filePath);
-    if (!(await file.exists())) {
-      return new Response("Not Found", { status: 404 });
-    }
-
-    const headers = new Headers();
-    const contentType = contentTypes[extname(filePath)] || file.type;
-    if (contentType) {
-      headers.set("Content-Type", contentType);
-    }
-
-    return new Response(file, { headers });
-  },
-});
-
-console.log(`TTS Studio running at ${server.url}`);

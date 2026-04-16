@@ -1,37 +1,25 @@
 {
-  "name": "whatsappsender",
+  "name": "tts-desktop",
   "version": "1.0.0",
-  "description": "Electrobun demo app with React 19, Tailwind CSS 4, and Vite 8",
+  "private": true,
+  "type": "module",
+  "description": "Electrobun desktop TTS app using hosted Microsoft Edge voices",
   "scripts": {
-    "dev": "concurrently \"bun run hmr\" \"electrobun dev\"",
-    "start": "vite build && electrobun dev",
-    "hmr": "vite --host 127.0.0.1 --port 5173",
-    "build": "vite build && electrobun build",
-    "build:stable": "vite build && electrobun build --env=stable",
-    "build:release": "vite build && electrobun build --release",
-    "build:canary": "vite build && electrobun build --env=canary",
-    "typecheck": "tsc --noEmit"
+    "dev": "electrobun dev",
+    "start": "electrobun dev",
+    "build": "electrobun build",
+    "build:stable": "electrobun build --env stable",
+    "build:release": "electrobun build --release",
+    "build:canary": "electrobun build --env canary"
   },
   "dependencies": {
+    "edge-tts": "^1.0.1",
     "electrobun": "1.16.0",
-    "keytar": "^7.9.0",
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
-    "selenium-webdriver": "^4.41.0"
+    "node-edge-tts": "^1.2.10"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "4.2.2",
     "@types/bun": "latest",
-    "@types/react": "19.2.14",
-    "@types/react-dom": "19.2.3",
-    "@types/selenium-webdriver": "^4.35.5",
-    "@vitejs/plugin-react": "6.0.1",
-    "autoprefixer": "^10.4.27",
-    "concurrently": "^9.2.1",
-    "postcss": "^8.5.8",
     "rcedit": "^5.0.2",
-    "tailwindcss": "4.2.2",
-    "typescript": "6.0.2",
-    "vite": "8.0.3"
+    "typescript": "6.0.2"
   }
 }

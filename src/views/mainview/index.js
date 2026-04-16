@@ -1,3 +1,14 @@
+import { Electroview } from "electrobun/view";
+
+const rpc = Electroview.defineRPC({
+  handlers: {
+    requests: {},
+    messages: {},
+  },
+});
+
+const electroview = new Electroview({ rpc });
+
 const elements = {
   voiceSelect: document.getElementById("voiceSelect"),
   langFilter: document.getElementById("langFilter"),
@@ -321,6 +332,28 @@ function triggerBrowserDownload(filename) {
   return true;
 }
 
+async function blobToBase64(blob) {
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+
+  return String(dataUrl).replace(/^data:[^;]+;base64,/, "");
+}
+
+function base64ToBlob(base64, mimeType) {
+  const binary = window.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return new Blob([bytes], { type: mimeType });
+}
+
 async function saveGeneratedAudio() {
   if (!state.lastGeneratedBlob || !state.lastGeneratedFilename) {
     setDownloadStatus("generate audio before saving");
@@ -352,10 +385,32 @@ async function saveGeneratedAudio() {
       }
 
       console.warn(
-        "showSaveFilePicker failed, falling back to browser download",
+        "showSaveFilePicker failed, falling back to Bun save flow",
         error,
       );
     }
+  }
+
+  try {
+    const result = await electroview.rpc.request.saveGeneratedAudio({
+      audioBase64: await blobToBase64(state.lastGeneratedBlob),
+      filename: state.lastGeneratedFilename,
+    });
+
+    if (result?.saved) {
+      setDownloadStatus(`saved: ${state.lastGeneratedFilename}`);
+      return;
+    }
+
+    if (result?.canceled) {
+      setDownloadStatus("save cancelled");
+      return;
+    }
+  } catch (error) {
+    console.warn(
+      "Bun save flow failed, falling back to browser download",
+      error,
+    );
   }
 
   if (triggerBrowserDownload(state.lastGeneratedFilename)) {
@@ -364,18 +419,6 @@ async function saveGeneratedAudio() {
   }
 
   setDownloadStatus("save failed");
-}
-
-async function readErrorResponse(response) {
-  const contentType = response.headers.get("content-type") || "";
-
-  if (contentType.includes("application/json")) {
-    const body = await response.json();
-    return body.error || `Request failed with status ${response.status}`;
-  }
-
-  const body = await response.text();
-  return body || `Request failed with status ${response.status}`;
 }
 
 function languageLabel(locale) {
@@ -411,7 +454,6 @@ function renderVoiceOptions() {
   const previousKey = elements.voiceSelect.value || getStoredVoiceKey();
   elements.voiceSelect.innerHTML = "";
 
-  // Group by language
   const grouped = new Map();
   for (const voice of filtered) {
     const lang = voice.locale.split("-")[0];
@@ -419,15 +461,14 @@ function renderVoiceOptions() {
     grouped.get(lang).push(voice);
   }
 
-  // Sort groups by language name, voices by friendlyName within each group
   const sortedLangs = [...grouped.keys()].sort((a, b) =>
     languageLabel(a).localeCompare(languageLabel(b)),
   );
 
   for (const lang of sortedLangs) {
-    const voices = grouped.get(lang).sort((a, b) =>
-      a.friendlyName.localeCompare(b.friendlyName),
-    );
+    const voices = grouped
+      .get(lang)
+      .sort((a, b) => a.friendlyName.localeCompare(b.friendlyName));
     const optgroup = document.createElement("optgroup");
     optgroup.label = languageLabel(lang);
 
@@ -441,10 +482,8 @@ function renderVoiceOptions() {
     elements.voiceSelect.appendChild(optgroup);
   }
 
-  elements.voiceCount.textContent =
-    `Showing ${filtered.length} of ${state.availableVoices.length} voices`;
+  elements.voiceCount.textContent = `Showing ${filtered.length} of ${state.availableVoices.length} voices`;
 
-  // Restore selection
   const restoredVoice = filtered.find((v) => buildVoiceKey(v) === previousKey);
   if (restoredVoice) {
     elements.voiceSelect.value = buildVoiceKey(restoredVoice);
@@ -457,19 +496,16 @@ function renderVoiceOptions() {
 }
 
 async function populateVoices() {
-  const response = await fetch("/api/voices", { cache: "no-store" });
-
-  if (!response.ok) {
-    throw new Error(await readErrorResponse(response));
-  }
-
-  const payload = await response.json();
-  const voices = Array.isArray(payload.voices)
+  const payload = await electroview.rpc.request.getVoices({
+    forceRefresh: false,
+  });
+  const voices = Array.isArray(payload?.voices)
     ? payload.voices
         .slice()
-        .sort((left, right) =>
-          left.locale.localeCompare(right.locale) ||
-          left.friendlyName.localeCompare(right.friendlyName),
+        .sort(
+          (left, right) =>
+            left.locale.localeCompare(right.locale) ||
+            left.friendlyName.localeCompare(right.friendlyName),
         )
     : [];
 
@@ -492,7 +528,6 @@ async function populateVoices() {
   state.lastVoiceSnapshot = snapshot;
   state.availableVoices = voices;
 
-  // Populate language filter
   const langs = [...new Set(voices.map((v) => v.locale.split("-")[0]))].sort(
     (a, b) => languageLabel(a).localeCompare(languageLabel(b)),
   );
@@ -508,7 +543,6 @@ async function populateVoices() {
 
   renderVoiceOptions();
 
-  // Select preferred voice
   const storedSelection = getStoredVoiceKey();
   const restoredVoice = voices.find(
     (voice) => buildVoiceKey(voice) === storedSelection,
@@ -529,40 +563,24 @@ async function populateVoices() {
 }
 
 async function requestSynthesis(text, voice) {
-  const response = await fetch("/api/synthesize", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      text,
-      requestedVoice: voice
-        ? {
-            name: voice.friendlyName,
-            lang: voice.locale,
-            voiceURI: voice.shortName,
-            default: false,
-            localService: false,
-          }
-        : null,
-    }),
+  const response = await electroview.rpc.request.synthesizeSpeech({
+    text,
+    requestedVoice: voice
+      ? {
+          name: voice.friendlyName,
+          lang: voice.locale,
+          voiceURI: voice.shortName,
+          default: false,
+          localService: false,
+        }
+      : null,
   });
 
-  if (!response.ok) {
-    throw new Error(await readErrorResponse(response));
-  }
-
   return {
-    blob: await response.blob(),
-    usedVoiceName: decodeURIComponent(
-      response.headers.get("X-TTS-Voice-Name") || "",
-    ),
-    usedVoiceCulture: decodeURIComponent(
-      response.headers.get("X-TTS-Voice-Culture") || "",
-    ),
-    suggestedFilename: decodeURIComponent(
-      response.headers.get("X-TTS-Filename") || "",
-    ),
+    blob: base64ToBlob(response.audioBase64, response.mimeType || "audio/mpeg"),
+    usedVoiceName: response.usedVoiceName || "",
+    usedVoiceCulture: response.usedVoiceCulture || "",
+    suggestedFilename: response.suggestedFilename || "",
   };
 }
 

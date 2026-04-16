@@ -38,6 +38,7 @@
 
             <div class="status-grid">
                 <p id="ariaStatus" class="status-line"></p>
+                <p id="voiceRestoreStatus" class="status-line" hidden></p>
                 <p id="voiceOutput" class="status-line">Voice in use: not selected yet.</p>
                 <p id="speechStatus" class="status-line">Speech status: waiting for voices.</p>
                 <p id="downloadStatus" class="status-line">Download status: idle.</p>
@@ -50,6 +51,7 @@
 
             <div class="action-row">
                 <button id="speakButton" type="button">Generate Preview</button>
+                <button id="cancelGenerateButton" type="button" disabled>Cancel Generation</button>
                 <button id="downloadButton" type="button" disabled>Save Audio As...</button>
                 <button id="stopPlaybackButton" type="button" disabled>Stop Playback</button>
             </div>

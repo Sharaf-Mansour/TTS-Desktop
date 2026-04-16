@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TTS Studio</title>
+    <link rel="stylesheet" href="./styles.css">
+</head>
+
+<body>
+    <main class="app-shell">
+        <section class="panel">
+            <p class="eyebrow">Bun + Browser Speech Synthesis</p>
+            <h1>TTS Studio</h1>
+            <p class="intro">Choose a voice from the hosted provider catalog, then let the server generate audio with
+                that exact Microsoft online voice.</p>
+
+            <div class="field-group voice-picker">
+                <label>Voice</label>
+                <div class="voice-filters">
+                    <select id="langFilter" aria-label="Filter by language">
+                        <option value="">All languages</option>
+                    </select>
+                    <input id="voiceSearch" type="search" placeholder="Search voices…" aria-label="Search voices">
+                </div>
+                <select id="voiceSelect" size="8">
+                    <option value="">Loading voices...</option>
+                </select>
+                <p id="voiceCount" class="voice-count"></p>
+            </div>
+
+            <div class="status-grid">
+                <p id="ariaStatus" class="status-line"></p>
+                <p id="voiceOutput" class="status-line">Voice in use: not selected yet.</p>
+                <p id="speechStatus" class="status-line">Speech status: waiting for voices.</p>
+                <p id="downloadStatus" class="status-line">Download status: idle.</p>
+            </div>
+
+            <div class="field-group">
+                <label for="text">Text to speak</label>
+                <textarea id="text" rows="7">Hello, I am your voice assistant.</textarea>
+            </div>
+
+            <div class="action-row">
+                <button id="speakButton" type="button">Generate Preview</button>
+                <button id="downloadButton" type="button" disabled>Save Audio As...</button>
+                <button id="stopPlaybackButton" type="button" disabled>Stop Playback</button>
+            </div>
+
+            <p id="downloadHint" class="hint">Generate a preview first, then save it explicitly. If your browser
+                supports it, you will get a real save dialog; otherwise the app falls back to a standard download.</p>
+
+            <section id="previewPanel" class="preview-panel" hidden>
+                <div class="preview-header">
+                    <div>
+                        <p class="preview-eyebrow">Captured Preview</p>
+                        <h2 id="previewTitle">No preview yet</h2>
+                    </div>
+                    <p id="durationOutput" class="duration-output">Duration: 0.00s</p>
+                </div>
+
+                <canvas id="waveformCanvas" class="waveform-canvas" width="680" height="180"></canvas>
+                <audio id="previewAudio" controls preload="metadata"></audio>
+                <a id="downloadLink" href="#" hidden>Download audio</a>
+            </section>
+        </section>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+</body>
+
+</html>

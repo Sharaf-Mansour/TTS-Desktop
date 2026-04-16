@@ -1,10 +1,17 @@
+import { readFileSync } from "node:fs";
 import type { ElectrobunConfig } from "electrobun";
+
+const packageJson = JSON.parse(
+  readFileSync(new URL("./package.json", import.meta.url), "utf8"),
+);
+const appVersion =
+  typeof packageJson.version === "string" ? packageJson.version : "0.0.0";
 
 export default {
   app: {
     name: "TTS Studio",
     identifier: "com.sharafmansour.ttsdesktop",
-    version: "1.0.0",
+    version: appVersion,
   },
 
   runtime: {

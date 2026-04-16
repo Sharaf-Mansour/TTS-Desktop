@@ -1,5 +1,6 @@
 import type { Dirent } from "node:fs";
-import { readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
 const artifactDir = process.env.ELECTROBUN_ARTIFACT_DIR;
@@ -39,7 +40,17 @@ async function directoryHasEntries(dirPath: string) {
   try {
     const entries = await readdir(dirPath);
     return entries.length > 0;
-  } catch {
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code !== "ENOENT"
+    ) {
+      console.warn(
+        `post-package: failed to inspect ${dirPath}: ${String(error)}`,
+      );
+    }
     return false;
   }
 }
@@ -112,15 +123,40 @@ async function archiveOnWindows() {
     throw new Error("PowerShell is required to create Windows zip artifacts.");
   }
 
-  const sourcePattern = join(resolvedSourceDir, "*");
-  const command = [
-    powerShell,
-    "-NoProfile",
-    "-Command",
-    `Compress-Archive -Path ${quotePowerShell(sourcePattern)} -DestinationPath ${quotePowerShell(zipPath)} -Force`,
-  ];
+  const tempDir = await mkdtemp(join(tmpdir(), "tts-desktop-post-package-"));
+  const scriptPath = join(tempDir, "zip-bundle.ps1");
 
-  await runCommand(command);
+  try {
+    const zipScript = [
+      "$ErrorActionPreference = 'Stop'",
+      "Add-Type -AssemblyName System.IO.Compression.FileSystem",
+      `$Source = ${quotePowerShell(resolvedSourceDir)}`,
+      `$Destination = ${quotePowerShell(zipPath)}`,
+      "if (Test-Path -LiteralPath $Destination) { Remove-Item -LiteralPath $Destination -Force }",
+      "$zip = [System.IO.Compression.ZipFile]::Open($Destination, [System.IO.Compression.ZipArchiveMode]::Create)",
+      "try {",
+      "  Get-ChildItem -LiteralPath $Source -Recurse -File | ForEach-Object {",
+      "    $relative = [System.IO.Path]::GetRelativePath($Source, $_.FullName)",
+      "    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, $relative, [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null",
+      "  }",
+      "} finally {",
+      "  $zip.Dispose()",
+      "}",
+    ].join("\r\n");
+
+    await writeFile(scriptPath, zipScript, "utf8");
+
+    await runCommand([
+      powerShell,
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      scriptPath,
+    ]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 async function archiveOnUnix() {

@@ -1,11 +1,22 @@
 import { join } from "node:path";
 import { BrowserView, BrowserWindow, PATHS, Utils } from "electrobun/bun";
 import {
-  buildDownloadFilename,
+  TTS_ERROR_CODES,
+  createTtsError,
+  serializeTtsError,
+} from "../shared/tts-errors.js";
+import {
   chooseHostedVoiceForRequest,
   getHostedVoices,
   synthesizeSpeech,
 } from "./tts-service.js";
+import {
+  MAX_SYNTHESIS_TEXT_LENGTH,
+  buildDownloadFilename,
+} from "../shared/tts-shared.js";
+
+const MAX_SAVED_AUDIO_BYTES = 50 * 1024 * 1024;
+const activeSyntheses = new Map();
 
 const helperScriptPath = join(
   PATHS.VIEWS_FOLDER,
@@ -36,75 +47,167 @@ function sanitizeFilename(filename) {
   return safeName || "speech.mp3";
 }
 
+async function withRpcErrorHandling(action, fallbackCode) {
+  try {
+    return await action();
+  } catch (error) {
+    throw new Error(serializeTtsError(error, fallbackCode));
+  }
+}
+
 const rpc = BrowserView.defineRPC({
   handlers: {
     requests: {
-      async getVoices({ forceRefresh = false } = {}) {
-        const voices = await getHostedVoices(forceRefresh);
-        return { voices };
+      async getRuntimeStatus() {
+        return {
+          hasNode: Boolean(Bun.which("node")),
+          maxSynthesisTextLength: MAX_SYNTHESIS_TEXT_LENGTH,
+        };
       },
 
-      async synthesizeSpeech({ text, requestedVoice } = {}) {
-        const normalizedText = typeof text === "string" ? text.trim() : "";
+      async cancelSynthesis({ requestId } = {}) {
+        return withRpcErrorHandling(async () => {
+          if (typeof requestId !== "string" || !requestId) {
+            return { canceled: false };
+          }
 
-        if (!normalizedText) {
-          throw new Error("Text is required.");
-        }
+          const activeSynthesis = activeSyntheses.get(requestId);
+          if (!activeSynthesis) {
+            return { canceled: false };
+          }
 
-        const voices = await getHostedVoices();
-        if (voices.length === 0) {
-          throw new Error("No hosted voices are available.");
-        }
+          activeSynthesis.wasCanceled = true;
+          activeSynthesis.proc?.kill();
+          return { canceled: true };
+        }, TTS_ERROR_CODES.UNEXPECTED);
+      },
 
-        const selectedVoice = chooseHostedVoiceForRequest(
-          voices,
-          normalizeRequestedVoice(requestedVoice),
-        );
+      async getVoices({ forceRefresh = false } = {}) {
+        return withRpcErrorHandling(async () => {
+          const voices = await getHostedVoices(forceRefresh);
+          return { voices };
+        }, TTS_ERROR_CODES.VOICES_UNAVAILABLE);
+      },
 
-        if (!selectedVoice) {
-          throw new Error("No suitable hosted voice was found.");
-        }
+      async synthesizeSpeech({ text, requestedVoice, requestId } = {}) {
+        return withRpcErrorHandling(async () => {
+          const normalizedText = typeof text === "string" ? text.trim() : "";
 
-        const audioBuffer = await synthesizeSpeech(
-          normalizedText,
-          selectedVoice.shortName,
-          helperScriptPath,
-        );
+          if (!normalizedText) {
+            throw createTtsError(
+              TTS_ERROR_CODES.TEXT_REQUIRED,
+              "Text is required.",
+            );
+          }
 
-        return {
-          audioBase64: Buffer.from(audioBuffer).toString("base64"),
-          mimeType: "audio/mpeg",
-          usedVoiceName: selectedVoice.friendlyName,
-          usedVoiceCulture: selectedVoice.locale,
-          suggestedFilename: buildDownloadFilename(normalizedText, "mp3"),
-        };
+          if (typeof requestId !== "string" || !requestId) {
+            throw createTtsError(
+              TTS_ERROR_CODES.REQUEST_ID_REQUIRED,
+              "A synthesis request ID is required.",
+            );
+          }
+
+          if (normalizedText.length > MAX_SYNTHESIS_TEXT_LENGTH) {
+            throw createTtsError(
+              TTS_ERROR_CODES.TEXT_TOO_LONG,
+              `Text is too long. Limit each request to ${MAX_SYNTHESIS_TEXT_LENGTH} characters.`,
+              { maxLength: MAX_SYNTHESIS_TEXT_LENGTH },
+            );
+          }
+
+          const voices = await getHostedVoices();
+          if (voices.length === 0) {
+            throw createTtsError(
+              TTS_ERROR_CODES.VOICES_UNAVAILABLE,
+              "No hosted voices are available.",
+            );
+          }
+
+          const selectedVoice = chooseHostedVoiceForRequest(
+            voices,
+            normalizeRequestedVoice(requestedVoice),
+          );
+
+          if (!selectedVoice) {
+            throw createTtsError(
+              TTS_ERROR_CODES.VOICE_NOT_FOUND,
+              "No suitable hosted voice was found.",
+            );
+          }
+
+          const synthesisState = {
+            proc: null,
+            wasCanceled: false,
+          };
+          activeSyntheses.set(requestId, synthesisState);
+
+          try {
+            const audioBuffer = await synthesizeSpeech(
+              normalizedText,
+              selectedVoice.shortName,
+              helperScriptPath,
+              {
+                onProcessCreated(proc) {
+                  synthesisState.proc = proc;
+                },
+                isCanceled() {
+                  return synthesisState.wasCanceled;
+                },
+              },
+            );
+
+            return {
+              audioBase64: Buffer.from(audioBuffer).toString("base64"),
+              mimeType: "audio/mpeg",
+              usedVoiceName: selectedVoice.friendlyName,
+              usedVoiceCulture: selectedVoice.locale,
+              suggestedFilename: buildDownloadFilename(normalizedText, "mp3"),
+            };
+          } finally {
+            activeSyntheses.delete(requestId);
+          }
+        }, TTS_ERROR_CODES.SYNTHESIS_FAILED);
       },
 
       async saveGeneratedAudio({ audioBase64, filename } = {}) {
-        if (typeof audioBase64 !== "string" || !audioBase64) {
-          throw new Error("Audio data is required.");
-        }
+        return withRpcErrorHandling(async () => {
+          if (typeof audioBase64 !== "string" || !audioBase64) {
+            throw createTtsError(
+              TTS_ERROR_CODES.AUDIO_REQUIRED,
+              "Audio data is required.",
+            );
+          }
 
-        const selectedPaths = await Utils.openFileDialog({
-          startingFolder: Utils.paths.downloads,
-          canChooseFiles: false,
-          canChooseDirectory: true,
-          allowsMultipleSelection: false,
-        });
+          const audioBuffer = Buffer.from(audioBase64, "base64");
+          if (audioBuffer.length > MAX_SAVED_AUDIO_BYTES) {
+            throw createTtsError(
+              TTS_ERROR_CODES.AUDIO_TOO_LARGE,
+              `Audio file is too large to save. Limit is ${Math.round(MAX_SAVED_AUDIO_BYTES / (1024 * 1024))} MB.`,
+              { maxBytes: MAX_SAVED_AUDIO_BYTES },
+            );
+          }
 
-        const targetDirectory = selectedPaths?.[0];
-        if (!targetDirectory) {
-          return { canceled: true, saved: false };
-        }
+          const selectedPaths = await Utils.openFileDialog({
+            startingFolder: Utils.paths.downloads,
+            canChooseFiles: false,
+            canChooseDirectory: true,
+            allowsMultipleSelection: false,
+          });
 
-        const filePath = join(targetDirectory, sanitizeFilename(filename));
-        await Bun.write(filePath, Buffer.from(audioBase64, "base64"));
+          const targetDirectory = selectedPaths?.[0];
+          if (!targetDirectory) {
+            return { canceled: true, saved: false };
+          }
 
-        return {
-          canceled: false,
-          saved: true,
-          path: filePath,
-        };
+          const filePath = join(targetDirectory, sanitizeFilename(filename));
+          await Bun.write(filePath, audioBuffer);
+
+          return {
+            canceled: false,
+            saved: true,
+            path: filePath,
+          };
+        }, TTS_ERROR_CODES.SAVE_FAILED);
       },
     },
     messages: {},

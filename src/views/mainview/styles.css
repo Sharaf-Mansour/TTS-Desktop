@@ -252,6 +252,11 @@ button:disabled {
   box-shadow: 0 12px 28px rgba(108, 29, 18, 0.24);
 }
 
+#cancelGenerateButton {
+  background: linear-gradient(135deg, #875f12 0%, #5a3f05 100%);
+  box-shadow: 0 12px 28px rgba(90, 63, 5, 0.24);
+}
+
 #downloadLink {
   display: inline-block;
   margin-top: 16px;

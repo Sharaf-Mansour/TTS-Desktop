@@ -8,9 +8,9 @@
     "dev": "electrobun dev",
     "start": "electrobun dev",
     "build": "electrobun build",
-    "build:stable": "electrobun build --env stable",
-    "build:release": "electrobun build --release",
-    "build:canary": "electrobun build --env canary"
+    "build:stable": "bun scripts/build-installer.js stable",
+    "build:release": "bun scripts/build-installer.js stable",
+    "build:canary": "bun scripts/build-installer.js canary"
   },
   "dependencies": {
     "edge-tts": "^1.0.1",

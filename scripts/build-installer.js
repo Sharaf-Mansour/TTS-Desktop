@@ -1,18 +1,30 @@
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 const channel = process.argv[2] || "stable";
+const supportedChannels = new Set(["stable", "canary"]);
 const projectRoot = process.cwd();
 const buildRoot = join(projectRoot, "build");
 const artifactsRoot = join(projectRoot, "artifacts");
+const buildFolderPrefix = `${channel}-win-`;
 const electrobunBinary = resolve(
   projectRoot,
   "node_modules",
   ".bin",
   process.platform === "win32" ? "electrobun.exe" : "electrobun",
 );
+const buildStartedAt = Date.now();
 
 function sanitizeZipStem(stem) {
   return stem.replace(/ /g, "");
@@ -20,6 +32,10 @@ function sanitizeZipStem(stem) {
 
 function quotePowerShell(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function getPowerShellBinary() {
+  return Bun.which("pwsh") || Bun.which("powershell") || "";
 }
 
 async function runCommand(cmd) {
@@ -32,6 +48,36 @@ async function runCommand(cmd) {
   return proc.exited;
 }
 
+async function clearStaleOutputs() {
+  if (existsSync(buildRoot)) {
+    const buildEntries = await readdir(buildRoot, { withFileTypes: true });
+
+    for (const entry of buildEntries) {
+      if (entry.name.startsWith(buildFolderPrefix)) {
+        await rm(join(buildRoot, entry.name), {
+          recursive: true,
+          force: true,
+        });
+      }
+    }
+  }
+
+  if (existsSync(artifactsRoot)) {
+    const artifactEntries = await readdir(artifactsRoot, {
+      withFileTypes: true,
+    });
+
+    for (const entry of artifactEntries) {
+      if (entry.name.startsWith(buildFolderPrefix)) {
+        await rm(join(artifactsRoot, entry.name), {
+          recursive: true,
+          force: true,
+        });
+      }
+    }
+  }
+}
+
 async function findBuildFolder() {
   if (!existsSync(buildRoot)) {
     return null;
@@ -39,15 +85,17 @@ async function findBuildFolder() {
 
   const entries = await readdir(buildRoot, { withFileTypes: true });
   const matchingFolder = entries.find(
-    (entry) => entry.isDirectory() && entry.name.startsWith(`${channel}-win-`),
+    (entry) => entry.isDirectory() && entry.name.startsWith(buildFolderPrefix),
   );
 
   return matchingFolder ? join(buildRoot, matchingFolder.name) : null;
 }
 
-async function getInstallerFileSet(buildFolder) {
+async function getInstallerFileSet(buildFolder, minimumMtimeMs) {
   const entries = await readdir(buildFolder);
-  const metadataFile = entries.find((entry) => entry.endsWith(".metadata.json"));
+  const metadataFile = entries.find((entry) =>
+    entry.endsWith(".metadata.json"),
+  );
 
   if (!metadataFile) {
     return null;
@@ -58,7 +106,21 @@ async function getInstallerFileSet(buildFolder) {
   const archivePath = join(buildFolder, `${stem}.tar.zst`);
   const metadataPath = join(buildFolder, metadataFile);
 
-  if (!existsSync(exePath) || !existsSync(archivePath) || !existsSync(metadataPath)) {
+  if (
+    !existsSync(exePath) ||
+    !existsSync(archivePath) ||
+    !existsSync(metadataPath)
+  ) {
+    return null;
+  }
+
+  const fileStats = await Promise.all([
+    stat(exePath),
+    stat(archivePath),
+    stat(metadataPath),
+  ]);
+
+  if (fileStats.some((fileStat) => fileStat.mtimeMs < minimumMtimeMs)) {
     return null;
   }
 
@@ -71,11 +133,11 @@ async function getInstallerFileSet(buildFolder) {
   };
 }
 
-async function createInstallerZip(fileSet) {
-  const powerShell = Bun.which("pwsh") || Bun.which("powershell");
-
+async function createInstallerZip(fileSet, powerShell) {
   if (!powerShell) {
-    throw new Error("PowerShell is required to build the Windows installer package.");
+    throw new Error(
+      "PowerShell is required to build the Windows installer package.",
+    );
   }
 
   const stagingRoot = await mkdtemp(join(tmpdir(), "tts-desktop-installer-"));
@@ -84,7 +146,10 @@ async function createInstallerZip(fileSet) {
 
   try {
     await mkdir(stagingInstallerDir, { recursive: true });
-    await copyFile(fileSet.exePath, join(stagingRoot, basename(fileSet.exePath)));
+    await copyFile(
+      fileSet.exePath,
+      join(stagingRoot, basename(fileSet.exePath)),
+    );
     await copyFile(
       fileSet.metadataPath,
       join(stagingInstallerDir, basename(fileSet.metadataPath)),
@@ -126,13 +191,17 @@ async function createInstallerZip(fileSet) {
       throw new Error("Failed to create the Windows installer zip package.");
     }
   } finally {
-    await rm(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(stagingRoot, { recursive: true, force: true }).catch(
+      () => undefined,
+    );
   }
 }
 
 async function writeUpdateJson(buildFolderName, metadataPath) {
   const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
-  const packageJson = JSON.parse(await readFile(join(projectRoot, "package.json"), "utf8"));
+  const packageJson = JSON.parse(
+    await readFile(join(projectRoot, "package.json"), "utf8"),
+  );
   const updateJsonPath = join(artifactsRoot, `${buildFolderName}-update.json`);
 
   await writeFile(
@@ -157,52 +226,94 @@ async function publishArtifacts(buildFolder, fileSet) {
   await mkdir(artifactsRoot, { recursive: true });
   await writeUpdateJson(buildFolderName, fileSet.metadataPath);
 
-  const filesToCopy = [fileSet.exePath, fileSet.archivePath, fileSet.metadataPath, fileSet.zipPath];
+  const filesToCopy = [
+    fileSet.exePath,
+    fileSet.archivePath,
+    fileSet.metadataPath,
+    fileSet.zipPath,
+  ];
 
   for (const filePath of filesToCopy) {
-    const destination = join(artifactsRoot, `${buildFolderName}-${basename(filePath)}`);
+    const destination = join(
+      artifactsRoot,
+      `${buildFolderName}-${basename(filePath)}`,
+    );
     await copyFile(filePath, destination);
   }
 }
 
-async function recoverInstallerArtifacts() {
+async function finalizeInstallerArtifacts(powerShell, minimumMtimeMs) {
   const buildFolder = await findBuildFolder();
   if (!buildFolder) {
     return false;
   }
 
-  const fileSet = await getInstallerFileSet(buildFolder);
+  const fileSet = await getInstallerFileSet(buildFolder, minimumMtimeMs);
   if (!fileSet) {
     return false;
   }
 
   if (!existsSync(fileSet.zipPath)) {
-    await createInstallerZip(fileSet);
+    await createInstallerZip(fileSet, powerShell);
   }
 
   await publishArtifacts(buildFolder, fileSet);
-  console.log(`Recovered installer artifacts in ${artifactsRoot}`);
+  console.log(`Published installer artifacts to ${artifactsRoot}`);
   return true;
 }
 
-if (!existsSync(electrobunBinary)) {
-  throw new Error(`Electrobun binary not found at ${electrobunBinary}`);
-}
-
-const exitCode = await runCommand([electrobunBinary, "build", `--env=${channel}`]);
-
-if (exitCode === 0) {
-  const recovered = await recoverInstallerArtifacts();
-  if (!recovered) {
-    console.log("Electrobun build completed without needing installer recovery.");
+function validateBuildInputs(powerShell) {
+  if (!supportedChannels.has(channel)) {
+    throw new Error(
+      `Unsupported build channel '${channel}'. Use one of: ${[...supportedChannels].join(", ")}.`,
+    );
   }
-  process.exit(0);
+
+  if (process.platform !== "win32") {
+    throw new Error(
+      "scripts/build-installer.js currently supports Windows packaging only.",
+    );
+  }
+
+  if (!existsSync(electrobunBinary)) {
+    throw new Error(`Electrobun binary not found at ${electrobunBinary}`);
+  }
+
+  if (!powerShell) {
+    throw new Error(
+      "PowerShell is required to build and package Windows installer artifacts. Install pwsh or Windows PowerShell and ensure it is on PATH.",
+    );
+  }
 }
 
-const recovered = await recoverInstallerArtifacts();
-if (recovered) {
-  console.warn("Electrobun build reported a packaging failure, but installer artifacts were recovered successfully.");
-  process.exit(0);
+const powerShell = getPowerShellBinary();
+
+validateBuildInputs(powerShell);
+await clearStaleOutputs();
+
+const exitCode = await runCommand([
+  electrobunBinary,
+  "build",
+  `--env=${channel}`,
+]);
+const finalized = await finalizeInstallerArtifacts(powerShell, buildStartedAt);
+
+if (exitCode !== 0) {
+  if (finalized) {
+    console.warn(
+      "Electrobun returned a non-zero exit code, but fresh installer artifacts were produced and published.",
+    );
+    process.exit(0);
+  }
+
+  process.exit(exitCode);
 }
 
-process.exit(exitCode);
+if (!finalized) {
+  console.error(
+    "Electrobun build completed, but no fresh installer artifacts were produced.",
+  );
+  process.exit(1);
+}
+
+process.exit(0);

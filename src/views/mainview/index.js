@@ -1294,6 +1294,19 @@ function renderSttTranscript() {
   syncSttButtons();
 }
 
+function commitInterimTranscript() {
+  const interim = sttState.interimText.trim();
+  if (!interim) {
+    return false;
+  }
+
+  sttState.finalizedText = sttState.finalizedText
+    ? `${sttState.finalizedText} ${interim}`.trim()
+    : interim;
+  sttState.interimText = "";
+  return true;
+}
+
 function startSpeechRecognition() {
   if (!SpeechRecognitionCtor) {
     setSttStatus("speech recognition is not supported in this runtime");
@@ -1353,13 +1366,15 @@ function startSpeechRecognition() {
   };
 
   recognizer.onend = () => {
+    const recoveredInterim = commitInterimTranscript();
     sttState.isListening = false;
-    sttState.interimText = "";
     sttState.recognizer = null;
     renderSttTranscript();
     setSttStatus(
       sttState.finalizedText
-        ? "stopped. Transcript ready."
+        ? recoveredInterim
+          ? "stopped. Transcript recovered from live capture."
+          : "stopped. Transcript ready."
         : "stopped. No transcript captured.",
     );
     syncSttButtons();
@@ -1376,6 +1391,8 @@ function startSpeechRecognition() {
 
 function stopSpeechRecognition() {
   if (sttState.recognizer && sttState.isListening) {
+    commitInterimTranscript();
+    renderSttTranscript();
     try {
       sttState.recognizer.stop();
     } catch (error) {

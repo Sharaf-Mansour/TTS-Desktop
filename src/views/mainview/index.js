@@ -8,7 +8,10 @@ import {
   getPreferredVoice,
 } from "../../shared/tts-shared.js";
 
+const RPC_MAX_REQUEST_TIME_MS = 15000;
+
 const rpc = Electroview.defineRPC({
+  maxRequestTime: RPC_MAX_REQUEST_TIME_MS,
   handlers: {
     requests: {},
     messages: {},
@@ -41,8 +44,34 @@ const elements = {
   downloadLink: document.getElementById("downloadLink"),
 };
 
+const sttElements = {
+  lang: document.getElementById("sttLang"),
+  startButton: document.getElementById("sttStartButton"),
+  stopButton: document.getElementById("sttStopButton"),
+  clearButton: document.getElementById("sttClearButton"),
+  sendToTtsButton: document.getElementById("sttSendToTtsButton"),
+  sendToTranslateButton: document.getElementById("sttSendToTranslateButton"),
+  status: document.getElementById("sttStatus"),
+  transcript: document.getElementById("sttTranscript"),
+};
+
+const translateElements = {
+  sourceLang: document.getElementById("translateSourceLang"),
+  targetLang: document.getElementById("translateTargetLang"),
+  swapButton: document.getElementById("translateSwapButton"),
+  input: document.getElementById("translateInput"),
+  button: document.getElementById("translateButton"),
+  clearButton: document.getElementById("translateClearButton"),
+  sendToTtsButton: document.getElementById("translateSendToTtsButton"),
+  status: document.getElementById("translateStatus"),
+  output: document.getElementById("translateOutput"),
+};
+
 const STORAGE_KEYS = {
   selectedVoice: "tts-studio.selected-voice",
+  sttLang: "tts-studio.stt-lang",
+  translateSourceLang: "tts-studio.translate-source-lang",
+  translateTargetLang: "tts-studio.translate-target-lang",
 };
 
 const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
@@ -870,3 +899,483 @@ window.addEventListener("load", () => {
 window.addEventListener("resize", () => {
   renderWaveform();
 });
+
+// -----------------------------------------------------------------------------
+// Speech-to-Text (browser Web Speech API)
+// -----------------------------------------------------------------------------
+
+const SpeechRecognitionCtor =
+  window.SpeechRecognition || window.webkitSpeechRecognition;
+
+const STT_LANGUAGES = [
+  { code: "en-US", label: "English (United States)" },
+  { code: "en-GB", label: "English (United Kingdom)" },
+  { code: "es-ES", label: "Spanish (Spain)" },
+  { code: "es-MX", label: "Spanish (Mexico)" },
+  { code: "fr-FR", label: "French (France)" },
+  { code: "de-DE", label: "German (Germany)" },
+  { code: "it-IT", label: "Italian (Italy)" },
+  { code: "pt-BR", label: "Portuguese (Brazil)" },
+  { code: "pt-PT", label: "Portuguese (Portugal)" },
+  { code: "ru-RU", label: "Russian (Russia)" },
+  { code: "ar-SA", label: "Arabic (Saudi Arabia)" },
+  { code: "ar-EG", label: "Arabic (Egypt)" },
+  { code: "tr-TR", label: "Turkish (Turkey)" },
+  { code: "nl-NL", label: "Dutch (Netherlands)" },
+  { code: "sv-SE", label: "Swedish (Sweden)" },
+  { code: "pl-PL", label: "Polish (Poland)" },
+  { code: "uk-UA", label: "Ukrainian (Ukraine)" },
+  { code: "cs-CZ", label: "Czech (Czechia)" },
+  { code: "hi-IN", label: "Hindi (India)" },
+  { code: "ja-JP", label: "Japanese (Japan)" },
+  { code: "ko-KR", label: "Korean (South Korea)" },
+  { code: "zh-CN", label: "Chinese (Mandarin, China)" },
+  { code: "zh-TW", label: "Chinese (Mandarin, Taiwan)" },
+  { code: "vi-VN", label: "Vietnamese (Vietnam)" },
+  { code: "th-TH", label: "Thai (Thailand)" },
+  { code: "id-ID", label: "Indonesian (Indonesia)" },
+];
+
+const TRANSLATE_LANGUAGES = [
+  { code: "auto", label: "Auto-detect" },
+  { code: "en", label: "English" },
+  { code: "es", label: "Spanish" },
+  { code: "fr", label: "French" },
+  { code: "de", label: "German" },
+  { code: "it", label: "Italian" },
+  { code: "pt", label: "Portuguese" },
+  { code: "ru", label: "Russian" },
+  { code: "ar", label: "Arabic" },
+  { code: "tr", label: "Turkish" },
+  { code: "nl", label: "Dutch" },
+  { code: "sv", label: "Swedish" },
+  { code: "pl", label: "Polish" },
+  { code: "uk", label: "Ukrainian" },
+  { code: "cs", label: "Czech" },
+  { code: "hi", label: "Hindi" },
+  { code: "ja", label: "Japanese" },
+  { code: "ko", label: "Korean" },
+  { code: "zh-CN", label: "Chinese (Simplified)" },
+  { code: "zh-TW", label: "Chinese (Traditional)" },
+  { code: "vi", label: "Vietnamese" },
+  { code: "th", label: "Thai" },
+  { code: "id", label: "Indonesian" },
+  { code: "he", label: "Hebrew" },
+  { code: "el", label: "Greek" },
+  { code: "ro", label: "Romanian" },
+  { code: "hu", label: "Hungarian" },
+];
+
+const sttState = {
+  recognizer: null,
+  isListening: false,
+  finalizedText: "",
+  interimText: "",
+};
+
+function populateSelect(selectEl, options, defaultValue) {
+  selectEl.innerHTML = "";
+  for (const option of options) {
+    const el = document.createElement("option");
+    el.value = option.code;
+    el.textContent = option.label;
+    selectEl.appendChild(el);
+  }
+  if (defaultValue) {
+    selectEl.value = defaultValue;
+  }
+}
+
+function loadStoredValue(key, fallback) {
+  try {
+    return window.localStorage.getItem(key) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function storeValue(key, value) {
+  try {
+    if (value) {
+      window.localStorage.setItem(key, value);
+    } else {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function setSttStatus(message) {
+  sttElements.status.textContent = `Recognition status: ${message}`;
+}
+
+function syncSttButtons() {
+  const hasRecognizer = Boolean(SpeechRecognitionCtor);
+  const hasTranscript = sttElements.transcript.value.trim().length > 0;
+
+  sttElements.startButton.disabled = !hasRecognizer || sttState.isListening;
+  sttElements.stopButton.disabled = !sttState.isListening;
+  sttElements.clearButton.disabled = !hasTranscript && !sttState.interimText;
+  sttElements.sendToTtsButton.disabled = !hasTranscript;
+  sttElements.sendToTranslateButton.disabled = !hasTranscript;
+  sttElements.lang.disabled = sttState.isListening;
+}
+
+function renderSttTranscript() {
+  const combined = sttState.interimText
+    ? `${sttState.finalizedText}${sttState.finalizedText ? " " : ""}${sttState.interimText}`.trimStart()
+    : sttState.finalizedText;
+  sttElements.transcript.value = combined;
+  syncSttButtons();
+}
+
+function startSpeechRecognition() {
+  if (!SpeechRecognitionCtor) {
+    setSttStatus("speech recognition is not supported in this runtime");
+    return;
+  }
+
+  if (sttState.isListening) {
+    return;
+  }
+
+  const recognizer = new SpeechRecognitionCtor();
+  recognizer.lang = sttElements.lang.value || "en-US";
+  recognizer.continuous = true;
+  recognizer.interimResults = true;
+  recognizer.maxAlternatives = 1;
+
+  recognizer.onstart = () => {
+    sttState.isListening = true;
+    setSttStatus(`listening in ${recognizer.lang}`);
+    syncSttButtons();
+  };
+
+  recognizer.onerror = (event) => {
+    const errorName = event?.error || "unknown";
+    if (errorName === "not-allowed" || errorName === "service-not-allowed") {
+      setSttStatus(
+        "microphone permission denied. Allow access and try again.",
+      );
+    } else if (errorName === "no-speech") {
+      setSttStatus("no speech detected. Try again.");
+    } else if (errorName === "network") {
+      setSttStatus("network error while reaching the speech service.");
+    } else {
+      setSttStatus(`error: ${errorName}`);
+    }
+  };
+
+  recognizer.onresult = (event) => {
+    let interim = "";
+    let finalized = sttState.finalizedText;
+
+    for (let i = event.resultIndex; i < event.results.length; i += 1) {
+      const result = event.results[i];
+      const transcript = result[0]?.transcript || "";
+      if (result.isFinal) {
+        finalized = finalized
+          ? `${finalized} ${transcript.trim()}`.trim()
+          : transcript.trim();
+      } else {
+        interim += transcript;
+      }
+    }
+
+    sttState.finalizedText = finalized;
+    sttState.interimText = interim.trim();
+    renderSttTranscript();
+  };
+
+  recognizer.onend = () => {
+    sttState.isListening = false;
+    sttState.interimText = "";
+    sttState.recognizer = null;
+    renderSttTranscript();
+    setSttStatus(
+      sttState.finalizedText
+        ? "stopped. Transcript ready."
+        : "stopped. No transcript captured.",
+    );
+    syncSttButtons();
+  };
+
+  try {
+    recognizer.start();
+    sttState.recognizer = recognizer;
+  } catch (error) {
+    console.warn("Failed to start speech recognition", error);
+    setSttStatus(`could not start: ${error?.message || "unknown error"}`);
+  }
+}
+
+function stopSpeechRecognition() {
+  if (sttState.recognizer && sttState.isListening) {
+    try {
+      sttState.recognizer.stop();
+    } catch (error) {
+      console.warn("Failed to stop speech recognition", error);
+    }
+  }
+}
+
+function clearSpeechTranscript() {
+  sttState.finalizedText = "";
+  sttState.interimText = "";
+  sttElements.transcript.value = "";
+  setSttStatus("transcript cleared.");
+  syncSttButtons();
+}
+
+function initializeSpeechToText() {
+  const storedLang = loadStoredValue(STORAGE_KEYS.sttLang, "en-US");
+  populateSelect(sttElements.lang, STT_LANGUAGES, storedLang);
+
+  if (!SpeechRecognitionCtor) {
+    setSttStatus(
+      "speech recognition is not available in this runtime. Try running on Windows with WebView2.",
+    );
+    sttElements.startButton.disabled = true;
+    return;
+  }
+
+  setSttStatus("idle. Click Start Recording to begin.");
+
+  sttElements.lang.addEventListener("change", () => {
+    storeValue(STORAGE_KEYS.sttLang, sttElements.lang.value);
+  });
+
+  sttElements.startButton.addEventListener("click", () => {
+    startSpeechRecognition();
+  });
+
+  sttElements.stopButton.addEventListener("click", () => {
+    stopSpeechRecognition();
+  });
+
+  sttElements.clearButton.addEventListener("click", () => {
+    clearSpeechTranscript();
+  });
+
+  sttElements.transcript.addEventListener("input", () => {
+    sttState.finalizedText = sttElements.transcript.value;
+    sttState.interimText = "";
+    syncSttButtons();
+  });
+
+  sttElements.sendToTtsButton.addEventListener("click", () => {
+    const text = sttElements.transcript.value.trim();
+    if (!text) {
+      return;
+    }
+    elements.text.value = text;
+    elements.text.dispatchEvent(new Event("input"));
+    setSpeechStatus("text updated from transcript");
+    elements.text.focus();
+  });
+
+  sttElements.sendToTranslateButton.addEventListener("click", () => {
+    const text = sttElements.transcript.value.trim();
+    if (!text) {
+      return;
+    }
+    translateElements.input.value = text;
+    const sttLangRoot = (sttElements.lang.value || "en").split("-")[0];
+    const matchingSource = TRANSLATE_LANGUAGES.find(
+      (option) => option.code === sttLangRoot,
+    );
+    if (matchingSource) {
+      translateElements.sourceLang.value = matchingSource.code;
+      storeValue(STORAGE_KEYS.translateSourceLang, matchingSource.code);
+    }
+    setTranslateStatus("text copied from transcript. Click Translate.");
+    translateElements.input.focus();
+    syncTranslateButtons();
+  });
+
+  syncSttButtons();
+}
+
+// -----------------------------------------------------------------------------
+// Translation
+// -----------------------------------------------------------------------------
+
+const translateState = {
+  isTranslating: false,
+  lastResult: "",
+};
+
+function setTranslateStatus(message) {
+  translateElements.status.textContent = `Translation status: ${message}`;
+}
+
+function syncTranslateButtons() {
+  const hasInput = translateElements.input.value.trim().length > 0;
+  const hasOutput = translateElements.output.value.trim().length > 0;
+
+  translateElements.button.disabled =
+    translateState.isTranslating || !hasInput;
+  translateElements.clearButton.disabled = !hasInput && !hasOutput;
+  translateElements.sendToTtsButton.disabled = !hasOutput;
+  translateElements.swapButton.disabled = translateState.isTranslating;
+  translateElements.sourceLang.disabled = translateState.isTranslating;
+  translateElements.targetLang.disabled = translateState.isTranslating;
+  translateElements.input.disabled = translateState.isTranslating;
+}
+
+async function performTranslation() {
+  const text = translateElements.input.value.trim();
+  if (!text) {
+    setTranslateStatus("enter some text to translate.");
+    return;
+  }
+
+  const sourceLang = translateElements.sourceLang.value || "auto";
+  const targetLang = translateElements.targetLang.value || "en";
+
+  if (sourceLang !== "auto" && sourceLang === targetLang) {
+    setTranslateStatus("source and target languages are the same.");
+    return;
+  }
+
+  translateState.isTranslating = true;
+  syncTranslateButtons();
+  setTranslateStatus(
+    `translating from ${sourceLang === "auto" ? "auto-detect" : sourceLang} to ${targetLang}...`,
+  );
+
+  try {
+    const response = await electroview.rpc.request.translateText({
+      text,
+      sourceLang,
+      targetLang,
+    });
+
+    const translated =
+      typeof response?.translatedText === "string"
+        ? response.translatedText
+        : "";
+    translateElements.output.value = translated;
+    translateState.lastResult = translated;
+
+    const detected = response?.detectedSourceLang || sourceLang;
+    const provider = response?.provider ? ` via ${response.provider}` : "";
+    setTranslateStatus(`translated${provider} (${detected} → ${targetLang}).`);
+  } catch (error) {
+    const appError = parseTtsError(error, TTS_ERROR_CODES.TRANSLATION_FAILED);
+    let friendly = appError.message || "translation failed.";
+    if (appError.code === TTS_ERROR_CODES.TRANSLATION_TEXT_TOO_LONG) {
+      friendly = `text too long. Limit: ${appError.details?.maxLength || "5000"} characters.`;
+    } else if (appError.code === TTS_ERROR_CODES.TRANSLATION_TEXT_REQUIRED) {
+      friendly = "text to translate is required.";
+    } else if (appError.code === TTS_ERROR_CODES.TRANSLATION_LANG_REQUIRED) {
+      friendly = "pick a target language.";
+    }
+    setTranslateStatus(`error: ${friendly}`);
+  } finally {
+    translateState.isTranslating = false;
+    syncTranslateButtons();
+  }
+}
+
+function initializeTranslation() {
+  const storedSource = loadStoredValue(
+    STORAGE_KEYS.translateSourceLang,
+    "auto",
+  );
+  const storedTarget = loadStoredValue(STORAGE_KEYS.translateTargetLang, "en");
+
+  populateSelect(
+    translateElements.sourceLang,
+    TRANSLATE_LANGUAGES,
+    storedSource,
+  );
+  populateSelect(
+    translateElements.targetLang,
+    TRANSLATE_LANGUAGES.filter((option) => option.code !== "auto"),
+    storedTarget,
+  );
+
+  translateElements.sourceLang.addEventListener("change", () => {
+    storeValue(
+      STORAGE_KEYS.translateSourceLang,
+      translateElements.sourceLang.value,
+    );
+  });
+
+  translateElements.targetLang.addEventListener("change", () => {
+    storeValue(
+      STORAGE_KEYS.translateTargetLang,
+      translateElements.targetLang.value,
+    );
+  });
+
+  translateElements.input.addEventListener("input", () => {
+    syncTranslateButtons();
+  });
+
+  translateElements.button.addEventListener("click", () => {
+    void performTranslation();
+  });
+
+  translateElements.swapButton.addEventListener("click", () => {
+    const source = translateElements.sourceLang.value;
+    const target = translateElements.targetLang.value;
+    if (source === "auto") {
+      setTranslateStatus("cannot swap while source is auto-detect.");
+      return;
+    }
+    translateElements.sourceLang.value = target;
+    translateElements.targetLang.value = source;
+    const inputText = translateElements.input.value;
+    const outputText = translateElements.output.value;
+    translateElements.input.value = outputText;
+    translateElements.output.value = inputText;
+    storeValue(STORAGE_KEYS.translateSourceLang, target);
+    storeValue(STORAGE_KEYS.translateTargetLang, source);
+    syncTranslateButtons();
+    setTranslateStatus("languages swapped.");
+  });
+
+  translateElements.clearButton.addEventListener("click", () => {
+    translateElements.input.value = "";
+    translateElements.output.value = "";
+    translateState.lastResult = "";
+    setTranslateStatus("cleared.");
+    syncTranslateButtons();
+  });
+
+  translateElements.sendToTtsButton.addEventListener("click", () => {
+    const text = translateElements.output.value.trim();
+    if (!text) {
+      return;
+    }
+    elements.text.value = text;
+    elements.text.dispatchEvent(new Event("input"));
+    setSpeechStatus("text updated from translation");
+
+    const targetLangRoot = (
+      translateElements.targetLang.value || ""
+    ).toLowerCase();
+    if (targetLangRoot && Array.isArray(state.availableVoices)) {
+      const match = state.availableVoices.find((voice) =>
+        voice.locale.toLowerCase().startsWith(`${targetLangRoot}-`),
+      );
+      if (match) {
+        selectVoice(match);
+        setVoiceRestoreStatus(
+          `Voice auto-switched to ${match.friendlyName} (${match.locale}) to match translation target.`,
+        );
+      }
+    }
+
+    elements.text.focus();
+  });
+
+  setTranslateStatus("idle.");
+  syncTranslateButtons();
+}
+
+initializeSpeechToText();
+initializeTranslation();

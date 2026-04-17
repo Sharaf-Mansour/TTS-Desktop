@@ -1,4 +1,4 @@
-const CACHE = "tts-studio-v1";
+const CACHE = "tts-studio-v2";
 const PRECACHE_URLS = [
   "/",
   "/views/mainview/styles.css",
@@ -9,6 +9,16 @@ const PRECACHE_URLS = [
   "/icons/icon-192.png",
   "/icons/icon-512.png",
 ];
+
+function isShellAsset(pathname) {
+  return (
+    pathname === "/" ||
+    pathname === "/manifest.webmanifest" ||
+    pathname === "/views/mainview/styles.css" ||
+    pathname === "/views/mainview/index.js" ||
+    pathname === "/web/electrobun-view-shim.js"
+  );
+}
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -62,6 +72,24 @@ self.addEventListener("fetch", (event) => {
         .catch(() =>
           caches.match(request).then((cached) => cached || caches.match("/")),
         ),
+    );
+    return;
+  }
+
+  if (isShellAsset(url.pathname)) {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response && response.ok) {
+            const copy = response.clone();
+            caches
+              .open(CACHE)
+              .then((cache) => cache.put(request, copy))
+              .catch(() => undefined);
+          }
+          return response;
+        })
+        .catch(() => caches.match(request)),
     );
     return;
   }

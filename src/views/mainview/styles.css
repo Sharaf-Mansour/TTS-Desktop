@@ -16,6 +16,8 @@
   --space-4: 16px;
   --space-5: 24px;
   --space-6: 32px;
+  --space-7: 40px;
+  --space-8: 56px;
 
   --bg: #f4f6fb;
   --bg-grad-a: rgba(13, 124, 102, 0.08);
@@ -111,41 +113,46 @@ body {
 .app-shell {
   max-width: 1200px;
   margin: 0 auto;
-  padding: clamp(16px, 3vw, 32px);
+  padding: clamp(20px, 4vw, 48px);
   display: grid;
-  gap: clamp(16px, 2vw, 24px);
+  gap: clamp(20px, 2.8vw, 32px);
 }
 
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-4);
-  padding: var(--space-4) var(--space-5);
-  border-radius: var(--radius-lg);
+  gap: var(--space-5);
+  padding: clamp(18px, 2.8vw, 30px) clamp(20px, 3vw, 34px);
+  border-radius: 28px;
   background: var(--panel);
   border: 1px solid var(--panel-border);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-md);
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-4);
   min-width: 0;
 }
 
 .brand-logo {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  box-shadow: var(--shadow-sm);
+  width: clamp(60px, 7vw, 84px);
+  height: clamp(60px, 7vw, 84px);
+  border-radius: 20px;
+  box-shadow: var(--shadow-md);
   flex: 0 0 auto;
+}
+
+.brand-text {
+  display: grid;
+  gap: 6px;
 }
 
 .brand-text h1 {
   margin: 0;
-  font-size: clamp(1.05rem, 1.6vw, 1.3rem);
+  font-size: clamp(1.35rem, 2vw, 1.8rem);
   line-height: 1.1;
   letter-spacing: -0.01em;
   color: var(--ink);
@@ -167,13 +174,13 @@ body {
 
 .layout {
   display: grid;
-  gap: clamp(16px, 2vw, 24px);
+  gap: clamp(22px, 3vw, 34px);
   grid-template-columns: minmax(0, 1fr);
 }
 
 .layout > .stack {
   display: grid;
-  gap: clamp(16px, 2vw, 24px);
+  gap: clamp(22px, 3vw, 34px);
   align-content: start;
   min-width: 0;
 }
@@ -186,8 +193,8 @@ body {
 }
 
 .panel {
-  padding: clamp(18px, 2.4vw, 28px);
-  border-radius: var(--radius-lg);
+  padding: clamp(22px, 3vw, 36px);
+  border-radius: 26px;
   background: var(--panel);
   border: 1px solid var(--panel-border);
   box-shadow: var(--shadow-sm);
@@ -199,7 +206,7 @@ body {
 }
 
 .section-header {
-  margin-bottom: var(--space-3);
+  margin-bottom: var(--space-4);
 }
 
 .section-header h2,
@@ -215,8 +222,8 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  gap: var(--space-3);
-  margin-bottom: var(--space-4);
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
   flex-wrap: wrap;
 }
 
@@ -237,15 +244,17 @@ h1 {
 }
 
 .intro {
-  margin: var(--space-3) 0 var(--space-5);
+  margin: var(--space-4) 0 var(--space-6);
   color: var(--muted-strong);
-  max-width: 60ch;
+  max-width: 64ch;
+  font-size: 1.04rem;
+  line-height: 1.7;
 }
 
 .field-group {
   display: grid;
-  gap: var(--space-2);
-  margin-bottom: var(--space-4);
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
   min-width: 0;
 }
 
@@ -260,7 +269,7 @@ label {
 .voice-filters {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: var(--space-2);
+  gap: var(--space-3);
 }
 
 select,
@@ -273,7 +282,7 @@ input[type="text"] {
   background: var(--panel-muted);
   border: 1px solid var(--panel-border);
   border-radius: var(--radius-md);
-  padding: 10px 12px;
+  padding: 14px 16px;
   outline: none;
   transition:
     border-color 120ms ease,
@@ -297,8 +306,8 @@ input[type="text"]:focus {
 }
 
 textarea {
-  min-height: 140px;
-  line-height: 1.55;
+  min-height: 168px;
+  line-height: 1.65;
   resize: vertical;
 }
 
@@ -308,8 +317,8 @@ textarea[readonly] {
 }
 
 .voice-picker select#voiceSelect {
-  height: 220px;
-  padding: 6px;
+  height: 280px;
+  padding: 10px;
 }
 
 .voice-picker select#voiceSelect option {
@@ -336,13 +345,13 @@ textarea[readonly] {
 
 .status-grid {
   display: grid;
-  gap: var(--space-2);
-  margin-bottom: var(--space-4);
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
 }
 
 .status-line {
   margin: 0;
-  padding: 10px 12px;
+  padding: 12px 14px;
   border-radius: var(--radius-md);
   background: var(--panel-muted);
   border: 1px solid var(--panel-border);
@@ -354,8 +363,9 @@ textarea[readonly] {
 .action-row {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-2);
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  margin-bottom: var(--space-2);
 }
 
 button,
@@ -364,14 +374,14 @@ button,
   font-weight: 600;
   border: 1px solid transparent;
   border-radius: var(--radius-pill);
-  padding: 10px 18px;
+  padding: 12px 20px;
   cursor: pointer;
   text-decoration: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 40px;
+  min-height: 46px;
   color: var(--accent-ink);
   background: var(--accent);
   box-shadow: var(--shadow-sm);
@@ -443,8 +453,8 @@ button:disabled {
   color: var(--ink);
   border: 1px solid var(--panel-border);
   box-shadow: none;
-  padding: 8px 14px;
-  min-height: 36px;
+  padding: 10px 16px;
+  min-height: 42px;
 }
 
 .theme-toggle:hover {
@@ -466,14 +476,15 @@ button:disabled {
 }
 
 .hint {
-  margin: var(--space-4) 0 0;
+  margin: var(--space-5) 0 0;
   color: var(--muted);
   font-size: 0.92rem;
+  line-height: 1.7;
 }
 
 .preview-panel {
-  margin-top: var(--space-5);
-  padding: var(--space-4);
+  margin-top: var(--space-6);
+  padding: var(--space-5);
   border-radius: var(--radius-lg);
   background: var(--panel-muted);
   border: 1px solid var(--panel-border);
@@ -529,7 +540,7 @@ button:disabled {
 .translate-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: var(--space-3);
+  gap: var(--space-4);
 }
 
 .translate-row .field-group {
@@ -549,6 +560,10 @@ button:disabled {
 }
 
 @media (max-width: 720px) {
+  .app-shell {
+    padding: 18px;
+  }
+
   .voice-filters {
     grid-template-columns: 1fr;
   }
@@ -559,6 +574,17 @@ button:disabled {
 
   .topbar {
     flex-wrap: wrap;
+    padding: 18px;
+  }
+
+  .brand-logo {
+    width: 56px;
+    height: 56px;
+    border-radius: 16px;
+  }
+
+  .panel {
+    padding: 20px;
   }
 
   .action-row button,
@@ -568,6 +594,31 @@ button:disabled {
 }
 
 @media (max-width: 440px) {
+  .app-shell {
+    padding: 14px;
+    gap: 16px;
+  }
+
+  .topbar,
+  .panel,
+  .preview-panel {
+    border-radius: 20px;
+  }
+
+  .brand {
+    align-items: flex-start;
+  }
+
+  .brand-logo {
+    width: 48px;
+    height: 48px;
+    border-radius: 14px;
+  }
+
+  .intro {
+    font-size: 0.98rem;
+  }
+
   .action-row button {
     flex: 1 1 100%;
   }

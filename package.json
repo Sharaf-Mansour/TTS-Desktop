@@ -7,6 +7,9 @@
   "scripts": {
     "dev": "electrobun dev",
     "start": "electrobun dev",
+    "dev:web": "bun --watch src/web/server.js",
+    "start:web": "bun src/web/server.js",
+    "deploy": "bun run start:web",
     "build": "electrobun build",
     "build:app:stable": "electrobun build --env=stable",
     "build:app:canary": "electrobun build --env=canary",

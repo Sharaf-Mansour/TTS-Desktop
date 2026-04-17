@@ -13,6 +13,10 @@ export const TTS_ERROR_CODES = {
   AUDIO_REQUIRED: "audio_required",
   AUDIO_TOO_LARGE: "audio_too_large",
   SAVE_FAILED: "save_failed",
+  TRANSLATION_TEXT_REQUIRED: "translation_text_required",
+  TRANSLATION_TEXT_TOO_LONG: "translation_text_too_long",
+  TRANSLATION_LANG_REQUIRED: "translation_lang_required",
+  TRANSLATION_FAILED: "translation_failed",
 };
 
 export function createTtsError(code, message, details = {}) {

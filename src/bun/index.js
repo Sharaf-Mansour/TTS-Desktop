@@ -16,6 +16,10 @@ import {
 } from "../shared/tts-shared.js";
 
 const MAX_SAVED_AUDIO_BYTES = 50 * 1024 * 1024;
+const MAX_TRANSLATION_TEXT_LENGTH = 5000;
+const RPC_MAX_REQUEST_TIME_MS = 15000;
+const LIBRE_TRANSLATE_TIMEOUT_MS = 5000;
+const MYMEMORY_TIMEOUT_MS = 4000;
 const activeSyntheses = new Map();
 
 const helperScriptPath = join(
@@ -55,7 +59,113 @@ async function withRpcErrorHandling(action, fallbackCode) {
   }
 }
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function translateViaLibre(text, sourceLang, targetLang) {
+  const source = !sourceLang || sourceLang === "auto" ? "auto" : sourceLang;
+  const url = "https://libretranslate.de/translate";
+
+  try {
+    const response = await fetchWithTimeout(
+      url,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          q: text,
+          source,
+          target: targetLang,
+          format: "text",
+        }),
+      },
+      LIBRE_TRANSLATE_TIMEOUT_MS,
+    );
+
+    if (!response.ok) {
+      throw createTtsError(
+        TTS_ERROR_CODES.TRANSLATION_FAILED,
+        `LibreTranslate returned HTTP ${response.status}.`,
+      );
+    }
+
+    const payload = await response.json();
+    const translatedText =
+      typeof payload?.translatedText === "string"
+        ? payload.translatedText
+        : "";
+
+    if (!translatedText) {
+      throw createTtsError(
+        TTS_ERROR_CODES.TRANSLATION_FAILED,
+        "LibreTranslate returned no text.",
+      );
+    }
+
+    return {
+      translatedText,
+      detectedSourceLang:
+        payload?.detectedLanguage?.language ||
+        (source === "auto" ? "auto" : source),
+      provider: "libretranslate",
+    };
+  } catch (error) {
+    throw (
+      error?.name === "AbortError"
+        ? createTtsError(
+            TTS_ERROR_CODES.TRANSLATION_FAILED,
+            "LibreTranslate timed out.",
+          )
+        : error
+    );
+  }
+}
+
+async function translateViaMyMemory(text, sourceLang, targetLang) {
+  const source =
+    !sourceLang || sourceLang === "auto" ? "autodetect" : sourceLang;
+  const url =
+    `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}` +
+    `&langpair=${encodeURIComponent(source)}|${encodeURIComponent(targetLang)}`;
+
+  const response = await fetchWithTimeout(url, {}, MYMEMORY_TIMEOUT_MS);
+
+  if (!response.ok) {
+    throw createTtsError(
+      TTS_ERROR_CODES.TRANSLATION_FAILED,
+      `Translation fallback returned HTTP ${response.status}.`,
+    );
+  }
+
+  const payload = await response.json();
+  const translatedText =
+    typeof payload?.responseData?.translatedText === "string"
+      ? payload.responseData.translatedText
+      : "";
+
+  if (!translatedText) {
+    throw createTtsError(
+      TTS_ERROR_CODES.TRANSLATION_FAILED,
+      "Translation fallback returned no text.",
+    );
+  }
+
+  return {
+    translatedText,
+    detectedSourceLang: source === "autodetect" ? "auto" : source,
+    provider: "mymemory",
+  };
+}
+
 const rpc = BrowserView.defineRPC({
+  maxRequestTime: RPC_MAX_REQUEST_TIME_MS,
   handlers: {
     requests: {
       async getRuntimeStatus() {
@@ -208,6 +318,58 @@ const rpc = BrowserView.defineRPC({
             path: filePath,
           };
         }, TTS_ERROR_CODES.SAVE_FAILED);
+      },
+
+      async translateText({ text, sourceLang, targetLang } = {}) {
+        return withRpcErrorHandling(async () => {
+          const normalizedText = typeof text === "string" ? text.trim() : "";
+          const normalizedTarget =
+            typeof targetLang === "string" ? targetLang.trim() : "";
+          const normalizedSource =
+            typeof sourceLang === "string" && sourceLang.trim()
+              ? sourceLang.trim()
+              : "auto";
+
+          if (!normalizedText) {
+            throw createTtsError(
+              TTS_ERROR_CODES.TRANSLATION_TEXT_REQUIRED,
+              "Text to translate is required.",
+            );
+          }
+
+          if (!normalizedTarget) {
+            throw createTtsError(
+              TTS_ERROR_CODES.TRANSLATION_LANG_REQUIRED,
+              "Target language is required.",
+            );
+          }
+
+          if (normalizedText.length > MAX_TRANSLATION_TEXT_LENGTH) {
+            throw createTtsError(
+              TTS_ERROR_CODES.TRANSLATION_TEXT_TOO_LONG,
+              `Text is too long. Limit each translation to ${MAX_TRANSLATION_TEXT_LENGTH} characters.`,
+              { maxLength: MAX_TRANSLATION_TEXT_LENGTH },
+            );
+          }
+
+          try {
+            return await translateViaLibre(
+              normalizedText,
+              normalizedSource,
+              normalizedTarget,
+            );
+          } catch (libreError) {
+            try {
+              return await translateViaMyMemory(
+                normalizedText,
+                normalizedSource,
+                normalizedTarget,
+              );
+            } catch {
+              throw libreError;
+            }
+          }
+        }, TTS_ERROR_CODES.TRANSLATION_FAILED);
       },
     },
     messages: {},

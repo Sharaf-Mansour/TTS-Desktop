@@ -73,6 +73,76 @@
                 <a id="downloadLink" href="#" hidden>Download audio</a>
             </section>
         </section>
+
+        <section class="panel secondary-panel">
+            <div class="section-header">
+                <p class="eyebrow">Speech to Text</p>
+                <h2>Dictate in any language</h2>
+            </div>
+            <p class="intro">Pick the language you will speak, press record, and the app will transcribe your
+                speech using the built-in browser speech recognition engine.</p>
+
+            <div class="field-group">
+                <label for="sttLang">Recognition language</label>
+                <select id="sttLang"></select>
+            </div>
+
+            <div class="action-row">
+                <button id="sttStartButton" type="button">Start Recording</button>
+                <button id="sttStopButton" type="button" disabled>Stop</button>
+                <button id="sttClearButton" type="button">Clear</button>
+                <button id="sttSendToTtsButton" type="button" disabled>Send to TTS</button>
+                <button id="sttSendToTranslateButton" type="button" disabled>Send to Translator</button>
+            </div>
+
+            <p id="sttStatus" class="status-line">Recognition status: idle.</p>
+
+            <div class="field-group">
+                <label for="sttTranscript">Transcript</label>
+                <textarea id="sttTranscript" rows="5" placeholder="Your spoken words will appear here..."></textarea>
+            </div>
+        </section>
+
+        <section class="panel secondary-panel">
+            <div class="section-header">
+                <p class="eyebrow">Translation</p>
+                <h2>Translate text between languages</h2>
+            </div>
+            <p class="intro">Pick a source and target language and translate any text for free. The result can be
+                piped straight into the speech generator above.</p>
+
+            <div class="translate-row">
+                <div class="field-group">
+                    <label for="translateSourceLang">From</label>
+                    <select id="translateSourceLang"></select>
+                </div>
+                <div class="field-group">
+                    <label for="translateTargetLang">To</label>
+                    <select id="translateTargetLang"></select>
+                </div>
+            </div>
+
+            <div class="field-group">
+                <label for="translateInput">Text to translate</label>
+                <textarea id="translateInput" rows="5"
+                    placeholder="Type or paste text here, or use Send from the sections above..."></textarea>
+            </div>
+
+            <div class="action-row">
+                <button id="translateButton" type="button">Translate</button>
+                <button id="translateSwapButton" type="button">Swap Languages</button>
+                <button id="translateClearButton" type="button">Clear</button>
+                <button id="translateSendToTtsButton" type="button" disabled>Send to TTS</button>
+            </div>
+
+            <p id="translateStatus" class="status-line">Translation status: idle.</p>
+
+            <div class="field-group">
+                <label for="translateOutput">Translation</label>
+                <textarea id="translateOutput" rows="5" readonly
+                    placeholder="The translated text will appear here..."></textarea>
+            </div>
+        </section>
     </main>
 
     <script type="module" src="./index.js"></script>

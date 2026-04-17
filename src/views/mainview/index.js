@@ -25,6 +25,7 @@ const elements = {
   langFilter: document.getElementById("langFilter"),
   voiceSearch: document.getElementById("voiceSearch"),
   voiceCount: document.getElementById("voiceCount"),
+  langDetectStatus: document.getElementById("langDetectStatus"),
   ariaStatus: document.getElementById("ariaStatus"),
   voiceRestoreStatus: document.getElementById("voiceRestoreStatus"),
   voiceOutput: document.getElementById("voiceOutput"),
@@ -89,7 +90,132 @@ const state = {
   maxSynthesisTextLength: MAX_SYNTHESIS_TEXT_LENGTH,
   currentSynthesisRequestId: "",
   cancelRequestedRequestId: "",
+  textDetectTimerId: 0,
+  lastDetectedTextLang: "",
 };
+
+const TEXT_LANGUAGE_SCRIPT_DETECTORS = [
+  { lang: "ar", preferredLocale: "ar-SA", matcher: /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/u },
+  { lang: "he", preferredLocale: "he-IL", matcher: /[\u0590-\u05FF]/u },
+  { lang: "ru", preferredLocale: "ru-RU", matcher: /[\u0400-\u04FF]/u },
+  { lang: "el", preferredLocale: "el-GR", matcher: /[\u0370-\u03FF]/u },
+  { lang: "hi", preferredLocale: "hi-IN", matcher: /[\u0900-\u097F]/u },
+  { lang: "th", preferredLocale: "th-TH", matcher: /[\u0E00-\u0E7F]/u },
+  { lang: "ko", preferredLocale: "ko-KR", matcher: /[\uAC00-\uD7AF]/u },
+  { lang: "ja", preferredLocale: "ja-JP", matcher: /[\u3040-\u30FF]/u },
+  { lang: "zh", preferredLocale: "zh-CN", matcher: /[\u4E00-\u9FFF]/u },
+  { lang: "ml", preferredLocale: "ml-IN", matcher: /[\u0D00-\u0D7F]/u },
+];
+
+const TEXT_LANGUAGE_LATIN_HINTS = [
+  {
+    lang: "sv",
+    preferredLocale: "sv-SE",
+    patterns: [
+      /[\u00E5\u00E4\u00F6]/gi,
+      /\boch\b/gi,
+      /\bdet\b/gi,
+      /\bjag\b/gi,
+      /\binte\b/gi,
+      /\b\u00E4r\b/gi,
+      /\bmed\b/gi,
+      /\bf\u00F6r\b/gi,
+    ],
+  },
+  {
+    lang: "de",
+    preferredLocale: "de-DE",
+    patterns: [
+      /[\u00E4\u00F6\u00FC\u00DF]/gi,
+      /\bund\b/gi,
+      /\bnicht\b/gi,
+      /\bich\b/gi,
+      /\bder\b/gi,
+      /\bdie\b/gi,
+      /\bdas\b/gi,
+    ],
+  },
+  {
+    lang: "fr",
+    preferredLocale: "fr-FR",
+    patterns: [
+      /[\u00E0\u00E2\u00E7\u00E9\u00E8\u00EA\u00EB\u00EE\u00EF\u00F4\u00F9\u00FB\u0153]/gi,
+      /\ble\b/gi,
+      /\bla\b/gi,
+      /\bles\b/gi,
+      /\bje\b/gi,
+      /\best\b/gi,
+      /\bpas\b/gi,
+      /\bavec\b/gi,
+    ],
+  },
+  {
+    lang: "es",
+    preferredLocale: "es-ES",
+    patterns: [
+      /[\u00F1\u00E1\u00E9\u00ED\u00F3\u00FA\u00BF\u00A1]/gi,
+      /\bel\b/gi,
+      /\bla\b/gi,
+      /\bque\b/gi,
+      /\bde\b/gi,
+      /\by\b/gi,
+      /\buna\b/gi,
+      /\besta\b/gi,
+    ],
+  },
+  {
+    lang: "pt",
+    preferredLocale: "pt-BR",
+    patterns: [
+      /[\u00E3\u00F5\u00E7\u00E1\u00E9\u00ED\u00F3\u00FA]/gi,
+      /\bn\u00E3o\b/gi,
+      /\bque\b/gi,
+      /\buma\b/gi,
+      /\bcom\b/gi,
+      /\bpara\b/gi,
+      /\bvoc\u00EA\b/gi,
+    ],
+  },
+  {
+    lang: "it",
+    preferredLocale: "it-IT",
+    patterns: [
+      /[\u00E0\u00E8\u00E9\u00EC\u00F2\u00F9]/gi,
+      /\bche\b/gi,
+      /\bnon\b/gi,
+      /\bper\b/gi,
+      /\buna\b/gi,
+      /\bsono\b/gi,
+      /\bcon\b/gi,
+    ],
+  },
+  {
+    lang: "nl",
+    preferredLocale: "nl-NL",
+    patterns: [
+      /[\u00EB\u00EF]/gi,
+      /\ben\b/gi,
+      /\bhet\b/gi,
+      /\bvan\b/gi,
+      /\bik\b/gi,
+      /\bniet\b/gi,
+      /\been\b/gi,
+    ],
+  },
+  {
+    lang: "en",
+    preferredLocale: "en-US",
+    patterns: [
+      /\bthe\b/gi,
+      /\band\b/gi,
+      /\bthis\b/gi,
+      /\bthat\b/gi,
+      /\byou\b/gi,
+      /\bare\b/gi,
+      /\bhello\b/gi,
+    ],
+  },
+];
 
 function wasRequestCanceled(requestId) {
   return state.cancelRequestedRequestId === requestId;
@@ -507,6 +633,138 @@ function languageLabel(locale) {
   }
 }
 
+function setLanguageDetectorStatus(message) {
+  if (!elements.langDetectStatus) {
+    return;
+  }
+
+  elements.langDetectStatus.textContent = `Language detector: ${message}`;
+}
+
+function countMatches(text, pattern) {
+  const matches = text.match(pattern);
+  return matches ? matches.length : 0;
+}
+
+function detectTextLanguage(text) {
+  const sample = text.trim();
+  if (sample.length < 4) {
+    return null;
+  }
+
+  for (const detector of TEXT_LANGUAGE_SCRIPT_DETECTORS) {
+    if (detector.matcher.test(sample)) {
+      return detector;
+    }
+  }
+
+  const latinOnly = !/[^\u0000-\u024F\s\d.,!?;:'"()\-]/u.test(sample);
+  if (!latinOnly) {
+    return null;
+  }
+
+  const scored = TEXT_LANGUAGE_LATIN_HINTS.map((detector) => ({
+    ...detector,
+    score: detector.patterns.reduce(
+      (total, pattern) => total + countMatches(sample, pattern),
+      0,
+    ),
+  }))
+    .filter((detector) => detector.score > 0)
+    .sort((left, right) => right.score - left.score);
+
+  if (scored.length === 0) {
+    return null;
+  }
+
+  const best = scored[0];
+  const runnerUp = scored[1];
+  if (best.score < 2) {
+    return null;
+  }
+  if (runnerUp && best.score <= runnerUp.score) {
+    return null;
+  }
+
+  return best;
+}
+
+function findVoiceForDetectedLanguage(lang, preferredLocale) {
+  const preferred = state.availableVoices.find(
+    (voice) => voice.locale.toLowerCase() === preferredLocale.toLowerCase(),
+  );
+  if (preferred) {
+    return preferred;
+  }
+
+  return state.availableVoices.find((voice) =>
+    voice.locale.toLowerCase().startsWith(`${lang.toLowerCase()}-`),
+  );
+}
+
+function applyDetectedLanguageToVoicePicker() {
+  const text = elements.text.value.trim();
+  if (!text) {
+    state.lastDetectedTextLang = "";
+    setLanguageDetectorStatus("waiting for text.");
+    return;
+  }
+
+  const detection = detectTextLanguage(text);
+  if (!detection) {
+    state.lastDetectedTextLang = "";
+    setLanguageDetectorStatus("no clear match yet.");
+    return;
+  }
+
+  const detectedLang = detection.lang.toLowerCase();
+  const hasFilterOption = [...elements.langFilter.options].some(
+    (option) => option.value.toLowerCase() === detectedLang,
+  );
+
+  if (!hasFilterOption) {
+    setLanguageDetectorStatus(
+      `${languageLabel(detectedLang)} detected, but no matching voice filter is loaded.`,
+    );
+    return;
+  }
+
+  if (
+    state.lastDetectedTextLang === detectedLang &&
+    elements.langFilter.value.toLowerCase() === detectedLang
+  ) {
+    setLanguageDetectorStatus(`${languageLabel(detectedLang)} detected.`);
+    return;
+  }
+
+  state.lastDetectedTextLang = detectedLang;
+  elements.langFilter.value = detectedLang;
+  renderVoiceOptions();
+
+  const detectedVoice = findVoiceForDetectedLanguage(
+    detectedLang,
+    detection.preferredLocale,
+  );
+  if (detectedVoice) {
+    selectVoice(detectedVoice);
+  }
+
+  setLanguageDetectorStatus(
+    `${languageLabel(detectedLang)} detected and applied to the voice filter.`,
+  );
+}
+
+function scheduleTextLanguageDetection(delayMs = 220) {
+  if (state.textDetectTimerId) {
+    window.clearTimeout(state.textDetectTimerId);
+  }
+
+  state.textDetectTimerId = window.setTimeout(() => {
+    state.textDetectTimerId = 0;
+    applyDetectedLanguageToVoicePicker();
+  }, delayMs);
+}
+
 function renderVoiceOptions() {
   const langValue = elements.langFilter.value;
   const searchText = elements.voiceSearch.value.trim().toLowerCase();
@@ -840,6 +1098,10 @@ elements.voiceSearch.addEventListener("input", () => {
   renderVoiceOptions();
 });
 
+elements.text.addEventListener("input", () => {
+  scheduleTextLanguageDetection();
+});
+
 elements.speakButton.addEventListener("click", () => {
   void generateSpeech();
 });
@@ -893,6 +1155,8 @@ window.addEventListener("load", () => {
     const appError = parseTtsError(error, TTS_ERROR_CODES.VOICES_UNAVAILABLE);
     setSpeechStatus(`error: ${getFriendlyErrorMessage(appError)}`);
     setDownloadStatus("voice catalog unavailable");
+  }).finally(() => {
+    scheduleTextLanguageDetection(0);
   });
 });
 
